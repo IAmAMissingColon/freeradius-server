@@ -39,6 +39,7 @@ typedef enum {
 	CHILD_INIT = 0,					//!< Initial state.
 	CHILD_RUNNABLE,					//!< Child can continue running.
 	CHILD_YIELDED,					//!< Child is yielded waiting on an event.
+	CHILD_EXITED,					//!< Child has exited
 	CHILD_DONE					//!< The child has completed.
 } unlang_parallel_child_state_t;
 
@@ -57,10 +58,11 @@ typedef struct {
 
 	int			num_children;		//!< How many children are executing.
 
-	unlang_group_t		*g;
+	bool			detach;			//!< are we creating the child detached
+	bool			clone;			//!< are the children cloned
 
 	unlang_parallel_child_t children[];		//!< Array of children.
-} unlang_parallel_t;
+} unlang_parallel_state_t;
 
 #ifdef __cplusplus
 }

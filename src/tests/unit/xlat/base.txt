@@ -1,0 +1,255 @@
+proto-dictionary radius
+
+#
+#  Literals
+#
+xlat \t\n\t
+match \t\n\t
+
+xlat the quick brown fox jumped over the lazy dog
+match the quick brown fox jumped over the lazy dog
+
+# The second % should not be present in the output.  We should also not see 'Missing closing brace' type errors
+xlat should not start %%{expansion
+match should not start %{expansion
+
+xlat %
+match ERROR offset 1 'Invalid variable expansion'
+
+xlat %%
+match %
+
+xlat \
+match ERROR offset 0 'Invalid escape at end of string'
+
+#
+#  Regex capture groups
+#
+xlat %{0}
+match %{0}
+
+xlat %{32}
+match %{32}
+
+xlat %{33}
+match ERROR offset 2 'Invalid regex reference.  Must be in range 0-32'
+
+xlat %{3a}
+match ERROR offset 2 'Unknown attribute'
+
+xlat %{-3}
+match ERROR offset 2 'Unknown attribute'
+
+xlat %{3
+match ERROR offset 1 'No matching closing brace'
+
+#
+#  Tests for xlat expansion
+#
+xlat %{Tunnel-Password}
+match %{Tunnel-Password}
+
+xlat %{test:bar}
+match %{test:bar}
+
+xlat %{Tunnel-Password}
+match %{Tunnel-Password}
+
+xlat %{Tunnel-Password:1}
+match %{Tunnel-Password:1}
+
+xlat %{Tunnel-Password:1[3]}
+match %{Tunnel-Password:1[3]}
+
+xlat %{Tunnel-Password:1[*]}
+match %{Tunnel-Password:1[*]}
+
+xlat %{Tunnel-Password:1[#]}
+match %{Tunnel-Password:1[#]}
+
+xlat %{reply:Tunnel-Password}
+match %{reply:Tunnel-Password}
+
+xlat %{reply:Tunnel-Password:1}
+match %{reply:Tunnel-Password:1}
+
+xlat %{reply:Tunnel-Password:1[3]}
+match %{reply:Tunnel-Password:1[3]}
+
+xlat %{reply:Tunnel-Password:1[*]}
+match %{reply:Tunnel-Password:1[*]}
+
+xlat %{reply:Tunnel-Password:1[#]}
+match %{reply:Tunnel-Password:1[#]}
+
+xlat %{User-Name[3]}
+match %{User-Name[3]}
+
+xlat %{User-Name[*]}
+match %{User-Name[*]}
+
+xlat %{User-Name[#]}
+match %{User-Name[#]}
+
+xlat %{User-Name[n]}
+match %{User-Name[n]}
+
+xlat %{request:User-Name[3]}
+match %{User-Name[3]}
+
+xlat %{request:User-Name[*]}
+match %{User-Name[*]}
+
+xlat %{request:User-Name[#]}
+match %{User-Name[#]}
+
+xlat %{3GPP-SGSN-Address}
+match %{3GPP-SGSN-Address}
+
+xlat \"Hello %S goo\"
+match \"Hello %S goo\"
+
+xlat \"%{Foreach-Variable-0}\"
+match \"%{Foreach-Variable-0}\"
+
+#
+#  3GPP stuff, to distinguish "list:3GPP" from
+#  "attribute:tag"
+#
+xlat \"%{request:3GPP-IMSI}\"
+match \"%{3GPP-IMSI}\"
+
+xlat \"%{reply:3GPP-IMSI}\"
+match \"%{reply:3GPP-IMSI}\"
+
+xlat \"%{reply:3GPP-IMSI[2]}\"
+match \"%{reply:3GPP-IMSI[2]}\"
+
+xlat /([A-Z0-9\\-]*)_%{Calling-Station-Id}/
+match /([A-Z0-9\\-]*)_%{Calling-Station-Id}/
+
+xlat %{length:1 + 2
+match ERROR offset 14 'Missing closing brace at end of string'
+
+xlat \"%t\tfoo\"
+match \"%t\tfoo\"
+
+xlat \"%t\t%{Client-IP-Address}\"
+match \"%t\t%{Client-IP-Address}\"
+
+xlat \"foo %{test:foo}\"
+match \"foo %{test:foo}\"
+
+#
+#  Alternations
+#
+xlat %{%{foo}:-%{bar}}
+match ERROR offset 4 'Unknown attribute'
+
+xlat %{%{User-Name}:-%{bar}}
+match ERROR offset 18 'Unknown attribute'
+
+xlat %{%{User-Name}:-bar}
+match %{%{User-Name}:-bar}
+
+xlat foo %{%{User-Name}:-bar} baz
+match foo %{%{User-Name}:-bar} baz
+
+xlat %{%{test:bar}:-%{User-Name}}
+match %{%{test:bar}:-%{User-Name}}
+
+xlat %{%{test:bar}:-%{%{User-Name}:-bar}}
+match %{%{test:bar}:-%{%{User-Name}:-bar}}
+
+xlat %{%{User-Name}:-}
+match %{%{User-Name}:-}
+
+xlat %{%{Operator-Name}:-}
+match %{%{Operator-Name}:-}
+
+xlat %{%{%{User-Name}:-foo}:-bar}
+match %{%{%{User-Name}:-foo}:-bar}
+
+xlat %{%{%{User-Name}:-foo}:-%{%{test:bar}:-%{User-Name}}}
+match %{%{%{User-Name}:-foo}:-%{%{test:bar}:-%{User-Name}}}
+
+xlat %{:-}
+match ERROR offset 2 'First item in alternation cannot be empty'
+
+xlat %{:-%{User-Name}}
+match ERROR offset 2 'First item in alternation cannot be empty'
+
+xlat %{%{}:-}
+match ERROR offset 4 'Empty expression is invalid'
+
+xlat %{%{}:-foo}
+match ERROR offset 4 'Empty expression is invalid'
+
+xlat %{%{User-Name}:-
+match ERROR offset 2 'No matching closing brace'
+
+# Discuss - Not sure the offset/message is correct here, but not sure if we can determine the correct offset either
+xlat %{%{User-Name}:-foo
+match ERROR offset 19 'Missing closing brace at end of string'
+
+xlat %{%{User-Name}:}
+match ERROR offset 15 'Expected '-' after ':''
+
+xlat %{%{User-Name}}
+match ERROR offset 14 'Expected ':' after first expansion, got '}''
+
+
+#
+#  Empty and malformed expansions
+#
+xlat %{
+match ERROR offset 1 'No matching closing brace'
+
+xlat %{}
+match ERROR offset 2 'Empty expression is invalid'
+
+xlat %{:}
+match ERROR offset 2 'Missing expansion function or list qualifier'
+
+xlat %{:bar}
+match ERROR offset 2 'Missing expansion function or list qualifier'
+
+xlat %{foo: bar}
+match ERROR offset 2 'Unknown expansion function or invalid list qualifier'
+
+xlat %{[}
+match ERROR offset 2 'Missing attribute name'
+
+xlat %{[baz}
+match ERROR offset 2 'Missing attribute name'
+
+xlat %{ }
+match ERROR offset 2 'Invalid char ' ' in expression'
+
+xlat %{\t}
+match ERROR offset 2 'Invalid char '\t' in expression'
+
+xlat %{\n}
+match ERROR offset 2 'Invalid char '\n' in expression'
+
+xlat %{foo }
+match ERROR offset 5 'Invalid char ' ' in expression'
+
+xlat %{foo bar}
+match ERROR offset 5 'Invalid char ' ' in expression'
+
+xlat %{test:
+match ERROR offset 1 'No matching closing brace'
+
+xlat %{test:%{User-Name
+match ERROR offset 8 'No matching closing brace'
+
+# Discuss - Not sure the offset/message is correct here, but not sure if we can determine the correct offset either
+xlat %{test:%{User-Name}
+match ERROR offset 19 'Missing closing brace at end of string'
+
+xlat %{myfirstxlat
+match ERROR offset 1 'No matching closing brace'
+
+count
+match 153

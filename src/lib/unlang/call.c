@@ -24,87 +24,71 @@
  */
 RCSID("$Id$")
 
+#include <freeradius-devel/server/state.h>
 #include "unlang_priv.h"
 #include "subrequest_priv.h"
 
 /** Send a signal from parent request to subrequest in another virtual server
  *
  */
-static void unlang_call_signal(UNUSED REQUEST *request, void *ctx, fr_state_signal_t action)
+static void unlang_call_signal(REQUEST *request, fr_state_signal_t action)
 {
-	REQUEST			*child = talloc_get_type_abort(ctx, REQUEST);
+	unlang_stack_t			*stack = request->stack;
+	unlang_stack_frame_t		*frame = &stack->frame[stack->depth];
+	REQUEST				*child = frame->state;
 
 	unlang_interpret_signal(child, action);
 }
 
 
-/** Resume a subrequest in another virtual server.
- *
- */
-static unlang_action_t unlang_call_resume(REQUEST *request, rlm_rcode_t *presult, void *rctx)
+static unlang_action_t unlang_call_child(REQUEST *request, rlm_rcode_t *presult)
 {
-	REQUEST				*child = talloc_get_type_abort(rctx, REQUEST);
 	unlang_stack_t			*stack = request->stack;
 	unlang_stack_frame_t		*frame = &stack->frame[stack->depth];
-	unlang_t			*instruction = frame->instruction->parent;
+	REQUEST				*child = frame->state;
 	rlm_rcode_t			rcode;
-#ifndef NDEBUG
-	unlang_resume_t			*mr;
-#endif
 
 	/*
-	 *	Continue running the child.
+	 *	Run the *child* through the "call" section, as a way
+	 *	to get post-processing of the packet.
 	 */
-	rcode = unlang_interpret_run(child);
-	if (rcode == RLM_MODULE_YIELD) {
-#ifndef NDEBUG
-		rad_assert(frame->instruction->type == UNLANG_TYPE_RESUME);
+	rcode = unlang_interpret(child);
+	if (rcode == RLM_MODULE_YIELD) return UNLANG_ACTION_YIELD;
 
-		mr = unlang_generic_to_resume(frame->instruction);
-		(void) talloc_get_type_abort(mr, unlang_resume_t);
-
-		rad_assert(mr->resume == NULL);
-#endif
-
-		/*
-		 *	If the child yields, our current frame is still an
-		 *	unlang_resume_t.
-		 */
-		return UNLANG_ACTION_YIELD;
-	}
-
-	stack = child->stack;
-	if (stack->depth > 0) {
-		rcode = unlang_interpret_run(child);
-		if (rcode == RLM_MODULE_YIELD) {
-			return UNLANG_ACTION_YIELD;
-		}
-	}
-
-	rad_assert(frame->instruction->type == UNLANG_TYPE_RESUME);
-
-	*presult = rcode;
-
-	frame->instruction->type = UNLANG_TYPE_SUBREQUEST; /* for debug purposes */
-
-	fr_state_store_in_parent(child, instruction, 0);
+	fr_state_store_in_parent(child, frame->instruction, 0);
 	unlang_subrequest_free(&child);
 
 	*presult = rcode;
 	return UNLANG_ACTION_CALCULATE_RESULT;
 }
 
-static unlang_action_t unlang_call(REQUEST *request,
-				   rlm_rcode_t *presult, int *ppriority)
+static unlang_action_t unlang_call_process(REQUEST *request, rlm_rcode_t *presult)
+{
+	unlang_stack_t			*stack = request->stack;
+	unlang_stack_frame_t		*frame = &stack->frame[stack->depth];
+	REQUEST				*child = frame->state;
+	rlm_rcode_t			rcode;
+
+	/*
+	 *	@todo - we can't change packet types
+	 *	(e.g. Access-Request -> Accounting-Request) unless
+	 *	we're in a subrequest.
+	 */
+	rcode = child->async->process(child->async->process_inst, child);
+	if (rcode == RLM_MODULE_YIELD) {
+		return UNLANG_ACTION_YIELD;
+	}
+
+	frame->interpret = unlang_call_child;
+	return unlang_call_child(request, presult);
+}
+
+static unlang_action_t unlang_call(REQUEST *request, rlm_rcode_t *presult)
 {
 	unlang_stack_t			*stack = request->stack;
 	unlang_stack_frame_t		*frame = &stack->frame[stack->depth];
 	unlang_t			*instruction = frame->instruction;
 	REQUEST				*child;
-
-	rlm_rcode_t			rcode;
-	int				priority;
-	unlang_resume_t			*mr;
 
 	unlang_group_t			*g;
 
@@ -115,17 +99,19 @@ static unlang_action_t unlang_call(REQUEST *request,
 
 	fr_io_process_t			*process_p;
 	void				*process_inst;
-	fr_io_final_t			final;
 
 	g = unlang_generic_to_group(instruction);
-	rad_assert(g->children != NULL);
+	if (!g->num_children) {
+		*presult = RLM_MODULE_NOOP;
+		return UNLANG_ACTION_CALCULATE_RESULT;
+	}
 
 	server = cf_section_name2(g->server_cs);
 
 	/*
 	 *	Check for loops.  We do this by checking the source of
-	 *	the call statement.  If any parent is doing the same
-	 *	call as we are, then it's a loop.
+	 *	the call statement.  If any parent is making a call
+	 *	from the same place as this one, then we're in a loop.
 	 */
 	for (child = request->parent;
 	     child != NULL;
@@ -192,13 +178,7 @@ static unlang_action_t unlang_call(REQUEST *request,
 
 	child = unlang_io_subrequest_alloc(request, dict, UNLANG_NORMAL_CHILD);
 	if (!child) {
-		rcode = RLM_MODULE_FAIL;
-		priority = instruction->actions[*presult];
-
-	calculate_result:
-		*presult = rcode;
-		*ppriority = priority;
-
+		*presult = RLM_MODULE_FAIL;
 		return UNLANG_ACTION_CALCULATE_RESULT;
 	}
 
@@ -228,6 +208,7 @@ static unlang_action_t unlang_call(REQUEST *request,
 			       &child->control,
 			       request->control) < 0)) {
 		REDEBUG("failed copying lists to child");
+
 		*presult = RLM_MODULE_FAIL;
 		return UNLANG_ACTION_CALCULATE_RESULT;
 	}
@@ -245,43 +226,10 @@ static unlang_action_t unlang_call(REQUEST *request,
 	 */
 	unlang_interpret_push(child, g->children, frame->result,
 			      UNLANG_NEXT_SIBLING, UNLANG_TOP_FRAME);
-
-	/*
-	 *	@todo - we can't change packet types
-	 *	(e.g. Access-Request -> Accounting-Request) unless
-	 *	we're in a subrequest.
-	 */
-	final = child->async->process(child->async->process_inst, child);
-	if (final == FR_IO_YIELD) {
-	yield:
-		/*
-		 *	Create the "resume" stack frame, and have it replace our stack frame.
-		 */
-		mr = unlang_interpret_resume_alloc(request, NULL, NULL, child);
-		if (!mr) {
-			rcode = RLM_MODULE_FAIL;
-			priority = instruction->actions[rcode];
-			goto calculate_result;
-		}
-
-		*presult = RLM_MODULE_YIELD;
-		return UNLANG_ACTION_YIELD;
-	}
-
-	/*
-	 *	Run the *child* through the "call" section, as a way
-	 *	to get post-processing of the packet.
-	 */
-	rcode = unlang_interpret_run(child);
-	if (rcode == RLM_MODULE_YIELD) goto yield;
-
-	*presult = frame->result = rcode;
-	fr_state_store_in_parent(child, instruction, 0);
-	unlang_subrequest_free(&child);
-
-	return UNLANG_ACTION_CALCULATE_RESULT;
+	frame->interpret = unlang_call_process;
+	frame->state = child;
+	return unlang_call_process(request, presult);
 }
-
 
 
 void unlang_call_init(void)
@@ -289,9 +237,8 @@ void unlang_call_init(void)
 	unlang_register(UNLANG_TYPE_CALL,
 			   &(unlang_op_t){
 				.name = "call",
-				.func = unlang_call,
+				.interpret = unlang_call,
 				.signal = unlang_call_signal,
-				.resume = unlang_call_resume,
 				.debug_braces = true
 			   });
 }

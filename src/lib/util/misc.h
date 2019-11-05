@@ -72,7 +72,7 @@ void		fr_talloc_verify_cb(const void *ptr, int depth,
  *
  * @param[in,out] _p	string to skip over.
  */
-#define fr_skip_not_whitespace(_p) while(!isspace((int)*(_p))) _p++
+#define fr_skip_not_whitespace(_p) while(*_p && !isspace((int)*(_p))) _p++
 
 /** Zero out any whitespace with nul bytes
  *
@@ -173,16 +173,13 @@ int		fr_blocking(int fd);
 ssize_t		fr_writev(int fd, struct iovec vector[], int iovcnt, fr_time_delta_t timeout);
 ssize_t		fr_utf8_to_ucs2(uint8_t *out, size_t outlen, char const *in, size_t inlen);
 size_t		fr_snprint_uint128(char *out, size_t outlen, uint128_t const num);
-int		fr_time_from_str(fr_time_t *date, char const *date_str);
+int		fr_unix_time_from_str(fr_unix_time_t *date, char const *date_str);
 
 bool		fr_multiply(uint64_t *result, uint64_t lhs, uint64_t rhs);
 int		fr_size_from_str(size_t *out, char const *str);
 int8_t		fr_pointer_cmp(void const *a, void const *b);
 void		fr_quick_sort(void const *to_sort[], int min_idx, int max_idx, fr_cmp_t cmp);
 int		fr_digest_cmp(uint8_t const *a, uint8_t const *b, size_t length) CC_HINT(nonnull);
-
-int 		fr_file_touch(char const *filename, mode_t mode);
-int 		fr_file_unlink(char const *filename);
 
 #ifdef __cplusplus
 }

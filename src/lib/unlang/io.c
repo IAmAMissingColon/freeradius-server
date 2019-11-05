@@ -33,22 +33,34 @@ RCSID("$Id$")
  *
  * This is a shim function added to 'fake' requests by the subrequest and parallel keywords.
  */
-fr_io_final_t unlang_io_process_interpret(UNUSED void const *instance, REQUEST *request)
+rlm_rcode_t unlang_io_process_interpret(UNUSED void const *instance, REQUEST *request)
 {
 	rlm_rcode_t rcode;
 
 	REQUEST_VERIFY(request);
 
-	rcode = unlang_interpret_resume(request);
+	rcode = unlang_interpret(request);
 
-	if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
+	/*
+	 *	We've yielded, and can keep running.  Do so.
+	 */
+	if ((rcode == RLM_MODULE_YIELD) &&
+	    (request->master_state != REQUEST_STOP_PROCESSING)) {
+		return RLM_MODULE_YIELD;
+	}
 
-	if (rcode == RLM_MODULE_YIELD) return FR_IO_YIELD;
+	/*
+	 *	Either we're done naturally, or we're forcibly done.  Stop.
+	 *
+	 *	If we have a parent, then we're running synchronously
+	 *	with it.  Allow the parent to resume.
+	 */
+	if (request->parent) unlang_interpret_resumable(request->parent);
 
 	/*
 	 *	Don't bother setting request->reply->code.
 	 */
-	return FR_IO_DONE;
+	return RLM_MODULE_HANDLED;
 }
 
 /** Allocate a child request based on the parent.
@@ -86,6 +98,7 @@ REQUEST *unlang_io_subrequest_alloc(REQUEST *parent, fr_dict_t const *namespace,
 	child->number = parent->number;
 	child->el = parent->el;
 	child->server_cs = parent->server_cs;
+	child->backlog = parent->backlog;
 
 	/*
 	 *	Initialize all of the async fields.

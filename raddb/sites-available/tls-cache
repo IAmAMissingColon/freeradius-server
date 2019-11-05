@@ -4,7 +4,7 @@
 #
 #  When a TLS session is used, the server will automatically create
 #  the following attributes in the session-state list.  These attributes
-#  are the the ones for the *server* certificate.
+#  are the ones for the *server* certificate.
 #
 #	       TLS-Cert-Serial
 #	       TLS-Cert-Expiration
@@ -54,7 +54,7 @@ server tls-cache {
 	#  This section is run whenever the server needs to write an
 	#  entry to the TLS session cache.
 	#
-	#  It should write the attribute &session-state:TLS-Session-Data
+	#  It should write the attribute &session-state:Session-Data
 	#  to the cache, along with any other attributes which
 	#  need to be cached.
 	#

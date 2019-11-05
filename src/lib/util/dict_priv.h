@@ -27,6 +27,8 @@ extern "C" {
 
 #include <freeradius-devel/util/dict.h>
 #include <freeradius-devel/util/hash.h>
+#include <freeradius-devel/util/dl.h>
+#include <freeradius-devel/protocol/base.h>
 
 #define DICT_POOL_SIZE		(1024 * 1024 * 2)
 #define DICT_FIXUP_POOL_SIZE	(1024)
@@ -79,6 +81,16 @@ struct fr_dict {
 							///< in the dictionary.
 
 	fr_hash_table_t		*autoref;		//!< other dictionaries that we loaded via references
+
+	fr_table_num_ordered_t const *subtype_table;	//!< table of subtypes for this protocol
+	size_t			subtype_table_len;	//!< length of table of subtypes for this protocol
+
+	unsigned int		vsa_parent;		//!< varies with different protocols
+	int			default_type_size;	//!< for TLVs and VSAs
+	int			default_type_length;	//!< for TLVs and VSAs
+
+	dl_t			*dl;			//!< for validation
+	fr_dict_protocol_t const *proto;		//!< protocol-specific validation functions
 };
 
 extern bool dict_initialised;
@@ -89,6 +101,8 @@ extern fr_table_num_ordered_t const date_precision_table[];
 extern size_t date_precision_table_len;
 
 fr_dict_t		*dict_alloc(TALLOC_CTX *ctx);
+
+int			dict_dlopen(fr_dict_t *dict, char const *name);
 
 /** Initialise fields in a dictionary attribute structure
  *

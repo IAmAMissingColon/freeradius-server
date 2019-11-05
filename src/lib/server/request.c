@@ -50,8 +50,27 @@ static int _request_free(REQUEST *request)
 	 *	need to persist across requests, they will already have been
 	 *	moved to a fr_state_entry_t, with the state pointers in the
 	 *	request being set to NULL, before the request is freed.
+	 *
+	 *	Our state ctx can be the same as the parents if
+	 *	request_data_restore_to_child() was called.  That
+	 *	function resets the childs state_ctx to be the same as
+	 *	the parents.  Adding this check here means that we
+	 *	don't need to call request_detach() on a child which
+	 *	will be freed immediately after the detach.
+	 *
+	 *	Note also that we do NOT call TALLOC_FREE(), which
+	 *	sets state_ctx=NULL.  We don't control the order in
+	 *	which talloc frees the children.  And the parents
+	 *	state_ctx pointer needs to stick around so that all of
+	 *	the children can check it.
+	 *
+	 *	If this assertion hits, it means that someone didn't
+	 *	call fr_state_store_in_parent()
 	 */
-	if (request->state_ctx) TALLOC_FREE(request->state_ctx);
+	if (request->state_ctx) {
+		rad_assert(!request->parent || (request->state_ctx != request->parent->state_ctx));
+		talloc_free(request->state_ctx);
+	}
 
 	talloc_free_children(request);
 

@@ -1,3 +1,4 @@
+#pragma once
 /*
  *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -22,7 +23,7 @@
  *
  * @copyright 2012-2016 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
-RCSIDH(other_h, "$Id$")
+RCSIDH(rest_h, "$Id$")
 
 #include <freeradius-devel/server/pairmove.h>
 #include <freeradius-devel/server/pool.h>
@@ -350,7 +351,7 @@ ssize_t rest_uri_host_unescape(char **out, UNUSED rlm_rest_t const *mod_inst, RE
  *	Async IO helpers
  */
 void rest_io_module_action(void *instance, void *thread, REQUEST *request, void *rctx, fr_state_signal_t action);
-void rest_io_xlat_action(REQUEST *request, void *xlat_inst, void *xlat_thread_inst, void *rctx, fr_state_signal_t action);
+void rest_io_xlat_signal(REQUEST *request, void *xlat_inst, void *xlat_thread_inst, void *rctx, fr_state_signal_t action);
 int rest_io_request_enqueue(rlm_rest_thread_t *thread, REQUEST *request, void *handle);
 int rest_io_init(rlm_rest_thread_t *thread, bool multiplex);
 

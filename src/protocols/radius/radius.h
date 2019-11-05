@@ -92,7 +92,7 @@ ssize_t		fr_radius_recv_header(int sockfd, fr_ipaddr_t *src_ipaddr, uint16_t *sr
 ssize_t		fr_radius_encode(uint8_t *packet, size_t packet_len, uint8_t const *original,
 				 char const *secret, UNUSED size_t secret_len, int code, int id, VALUE_PAIR *vps);
 
-ssize_t		fr_radius_decode(TALLOC_CTX *ctx, uint8_t *packet, size_t packet_len, uint8_t const *original,
+ssize_t		fr_radius_decode(TALLOC_CTX *ctx, uint8_t const *packet, size_t packet_len, uint8_t const *original,
 				 char const *secret, UNUSED size_t secret_len, VALUE_PAIR **vps) CC_HINT(nonnull);
 
 int		fr_radius_init(void);
@@ -121,9 +121,10 @@ int		fr_radius_packet_send(RADIUS_PACKET *packet, RADIUS_PACKET const *original,
 				      char const *secret) CC_HINT(nonnull (1,3));
 
 #define fr_radius_packet_log_hex(_log, _packet) _fr_radius_packet_log_hex(_log, _packet, __FILE__, __LINE__);
-void		_fr_radius_packet_log_hex(fr_log_t *log, RADIUS_PACKET const *packet, char const *file, int line) CC_HINT(nonnull);
+void		_fr_radius_packet_log_hex(fr_log_t const *log, RADIUS_PACKET const *packet, char const *file, int line) CC_HINT(nonnull);
 
 typedef struct {
+	TALLOC_CTX		*tmp_ctx;		//!< for temporary things cleaned up during decoding
 	uint8_t const		*vector;		//!< vector for encryption / decryption of data
 	char const		*secret;		//!< shared secret.  MUST be talloc'd
 	bool 			tunnel_password_zeros;

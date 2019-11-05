@@ -27,8 +27,7 @@ RCSID("$Id$")
 #include "unlang_priv.h"
 #include "group_priv.h"
 
-unlang_action_t unlang_group(REQUEST *request,
-			     UNUSED rlm_rcode_t *result, UNUSED int *priority)
+unlang_action_t unlang_group(REQUEST *request, UNUSED rlm_rcode_t *result)
 {
 	unlang_stack_t		*stack = request->stack;
 	unlang_stack_frame_t	*frame = &stack->frame[stack->depth];
@@ -51,8 +50,7 @@ unlang_action_t unlang_group(REQUEST *request,
 	return UNLANG_ACTION_PUSHED_CHILD;
 }
 
-static unlang_action_t unlang_policy(REQUEST *request,
-				     rlm_rcode_t *result, int *priority)
+static unlang_action_t unlang_policy(REQUEST *request, rlm_rcode_t *result)
 {
 	unlang_stack_t		*stack = request->stack;
 	unlang_stack_frame_t	*frame = &stack->frame[stack->depth];
@@ -62,7 +60,7 @@ static unlang_action_t unlang_policy(REQUEST *request,
 	 */
 	return_point_set(frame);
 
-	return unlang_group(request, result, priority);
+	return unlang_group(request, result);
 }
 
 
@@ -71,14 +69,21 @@ void unlang_group_init(void)
 	unlang_register(UNLANG_TYPE_GROUP,
 			   &(unlang_op_t){
 				.name = "group",
-				.func = unlang_group,
+				.interpret = unlang_group,
+				.debug_braces = true
+			   });
+
+	unlang_register(UNLANG_TYPE_REDUNDANT,
+			   &(unlang_op_t){
+				.name = "redundant",
+				.interpret = unlang_group,
 				.debug_braces = true
 			   });
 
 	unlang_register(UNLANG_TYPE_POLICY,
 			   &(unlang_op_t){
 				.name = "policy",
-				.func = unlang_policy,
+				.interpret = unlang_policy,
 				.debug_braces = true
 			   });
 }

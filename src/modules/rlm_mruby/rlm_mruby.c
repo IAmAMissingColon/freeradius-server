@@ -172,7 +172,7 @@ static int mod_instantiate(void *instance, CONF_SECTION *conf)
 	A(RLM_MODULE_OK)
 	A(RLM_MODULE_HANDLED)
 	A(RLM_MODULE_INVALID)
-	A(RLM_MODULE_USERLOCK)
+	A(RLM_MODULE_DISALLOW)
 	A(RLM_MODULE_NOTFOUND)
 	A(RLM_MODULE_NOOP)
 	A(RLM_MODULE_UPDATED)
@@ -376,12 +376,7 @@ static void add_vp_tuple(TALLOC_CTX *ctx, REQUEST *request, VALUE_PAIR **vps, mr
 			continue;
 		}
 
-		if (!(vp = fr_pair_afrom_da(ctx, dst->tmpl_da))) {
-			ERROR("Failed to create attribute %s", ckey);
-			talloc_free(dst);
-			continue;
-		}
-
+		MEM(vp = fr_pair_afrom_da(ctx, dst->tmpl_da));
 		talloc_free(dst);
 
 		vp->op = op;

@@ -52,8 +52,8 @@
  *  "time_order" heap, and ages out requests which have been active
  *  for "too long".
  *
- *  A request may return one of FR_IO_YIELD,
- *  FR_IO_REPLY, or FR_IO_DONE.  If a request is
+ *  A request may return one of RLM_MODULE_YIELD,
+ *  RLM_MODULE_OK, or RLM_MODULE_HANDLED.  If a request is
  *  yeilded, it is placed onto the yielded list in the worker
  *  "tracking" data structure.
  *
@@ -67,7 +67,6 @@ RCSID("$Id$")
 #include <freeradius-devel/io/channel.h>
 #include <freeradius-devel/io/message.h>
 #include <freeradius-devel/io/listen.h>
-#include <freeradius-devel/io/schedule.h>
 #include <freeradius-devel/unlang/interpret.h>
 #include <freeradius-devel/util/dlist.h>
 
@@ -656,8 +655,8 @@ static void worker_reset_timer(fr_worker_t *worker)
 
 	worker->next_cleanup = cleanup;
 
-	DEBUG2("Resetting worker %pV cleanup timer to +%ds",
-	       fr_box_time_delta(worker->max_request_time), fr_schedule_worker_id());
+	DEBUG2("Resetting worker %s cleanup timer to +%pV",
+	       worker->name, fr_box_time_delta(worker->max_request_time));
 	if (fr_event_timer_at(worker, worker->el, &worker->ev_cleanup,
 			      cleanup, fr_worker_max_request_time, worker) < 0) {
 		ERROR("Failed inserting max_request_time timer.");
@@ -752,16 +751,14 @@ static REQUEST *fr_worker_get_request(fr_worker_t *worker, fr_time_t now)
 	fr_channel_data_t	*cd;
 	REQUEST			*request;
 	fr_listen_t const	*listen;
-#ifndef HAVE_TALLOC_POOLED_OBJECT
 	TALLOC_CTX		*ctx;
-#endif
 
 	/*
 	 *	Grab a runnable request, and resume it.
 	 */
 	request = fr_heap_pop(worker->runnable);
 	if (request) {
-		DEBUG3("Worker %i found runnable request", fr_schedule_worker_id());
+		DEBUG3("%s found runnable request", worker->name);
 		REQUEST_VERIFY(request);
 		rad_assert(request->runnable_id < 0);
 		fr_time_tracking_resume(&request->async->tracking, now, &worker->tracking);
@@ -778,11 +775,11 @@ static REQUEST *fr_worker_get_request(fr_worker_t *worker, fr_time_t now)
 			WORKER_HEAP_POP(to_decode, cd);
 		}
 		if (!cd) {
-			DEBUG3("Worker %i localized and decode lists are empty", fr_schedule_worker_id());
+			DEBUG3("%s localized and decode lists are empty", worker->name);
 			return NULL;
 		}
 
-		DEBUG3("Worker %i found request to decode", fr_schedule_worker_id());
+		DEBUG3("%s found request to decode", worker->name);
 		worker->num_decoded++;
 	} while (!cd);
 
@@ -976,7 +973,7 @@ nak:
 static void fr_worker_run_request(fr_worker_t *worker, REQUEST *request)
 {
 	ssize_t size = 0;
-	fr_io_final_t final;
+	rlm_rcode_t final;
 
 	WORKER_VERIFY;
 
@@ -998,30 +995,31 @@ static void fr_worker_run_request(fr_worker_t *worker, REQUEST *request)
 
 	} else {
 		unlang_interpret_signal(request, FR_SIGNAL_CANCEL);
-		final = FR_IO_DONE;
+		final = RLM_MODULE_HANDLED;
 	}
 
 	/*
 	 *	Figure out what to do next.
 	 */
 	switch (final) {
-	case FR_IO_DONE:
+	case RLM_MODULE_HANDLED:
 		/*
 		 *	Done: don't send a reply.
 		 */
 		break;
 
-	case FR_IO_FAIL:
+	case RLM_MODULE_FAIL:
+	default:
 		/*
 		 *	Something went wrong.  It's done, but we don't send a reply.
 		 */
 		break;
 
-	case FR_IO_YIELD:
+	case RLM_MODULE_YIELD:
 		fr_time_tracking_yield(&request->async->tracking, fr_time(), &worker->tracking);
 		return;
 
-	case FR_IO_REPLY:
+	case RLM_MODULE_OK:
 		/*
 		 *	Don't reply to internally generated request.
 		 */
@@ -1090,12 +1088,12 @@ static int fr_worker_pre_event(void *ctx, fr_time_t wake)
 	 */
 	if (wake) return 0;
 
-	DEBUG3("\tWorker %s sleeping running %u, localized %u, to_decode %u",
+	DEBUG3("\t%s sleeping running %u, localized %u, to_decode %u",
 	       worker->name,
 	       fr_heap_num_elements(worker->runnable),
 	       fr_heap_num_elements(worker->localized.heap),
 	       fr_heap_num_elements(worker->to_decode.heap));
-	DEBUG3("\tWorker %s requests %" PRIu64 ", decoded %" PRIu64 ", replied %" PRIu64 " active %" PRIu64 "",
+	DEBUG3("\t%s requests %" PRIu64 ", decoded %" PRIu64 ", replied %" PRIu64 " active %" PRIu64 "",
 	       worker->name, worker->stats.in, worker->num_decoded,
 	       worker->stats.out, worker->num_active);
 
@@ -1104,7 +1102,7 @@ static int fr_worker_pre_event(void *ctx, fr_time_t wake)
 	 *	are still sleeping.
 	 */
 	if (worker->was_sleeping) {
-		DEBUG3("Worker %i was sleeping, not re-signaling", fr_schedule_worker_id());
+		DEBUG3("%s was sleeping, not re-signaling", worker->name);
 		return 0;
 	}
 
@@ -1128,7 +1126,7 @@ static int fr_worker_pre_event(void *ctx, fr_time_t wake)
 /**
  *  Track a channel in the "to_decode" or "localized" heap.
  */
-static int worker_message_cmp(void const *one, void const *two)
+static int8_t worker_message_cmp(void const *one, void const *two)
 {
 	fr_channel_data_t const *a = one, *b = two;
 	int ret;
@@ -1142,7 +1140,7 @@ static int worker_message_cmp(void const *one, void const *two)
 /**
  *  Track a REQUEST in the "runnable" heap.
  */
-static int worker_runnable_cmp(void const *one, void const *two)
+static int8_t worker_runnable_cmp(void const *one, void const *two)
 {
 	REQUEST const *a = one, *b = two;
 	int ret;
@@ -1156,7 +1154,7 @@ static int worker_runnable_cmp(void const *one, void const *two)
 /**
  *  Track a REQUEST in the "time_order" heap.
  */
-static int worker_time_order_cmp(void const *one, void const *two)
+static int8_t worker_time_order_cmp(void const *one, void const *two)
 {
 	REQUEST const *a = one, *b = two;
 
@@ -1421,7 +1419,7 @@ static void fr_worker_post_event(UNUSED fr_event_list_t *el, UNUSED fr_time_t wh
 	 *	cleanups are done periodically.
 	 */
 	if ((now - worker->checked_timeout) > (NSEC / 10)) {
-		DEBUG3("\tWorker %s checking timeouts", worker->name);
+		DEBUG3("\t%s checking timeouts", worker->name);
 		fr_worker_check_timeouts(worker, now);
 	}
 
@@ -1465,7 +1463,7 @@ void fr_worker(fr_worker_t *worker)
 		 */
 		wait_for_event = (fr_heap_num_elements(worker->runnable) == 0);
 		if (wait_for_event) {
-			DEBUG2("Worker %i ready to process requests", fr_schedule_worker_id());
+			DEBUG2("%s ready to process requests", worker->name);
 		}
 
 		/*

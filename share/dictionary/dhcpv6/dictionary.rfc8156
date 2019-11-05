@@ -26,8 +26,8 @@ VALUE	Failover-Connect-Flags		Fixed-PD-Length		1
 ATTRIBUTE	Failover-DNS-Removal-Info		116	tlv
 
 BEGIN-TLV	Failover-DNS-Removal-Info
-ATTRIBUTE	Failover-DNS-Host-Name			117	octets			# Domain name
-ATTRIBUTE	Failover-DNS-Zone-Name			118	octets			# Zone name
+ATTRIBUTE	Failover-DNS-Host-Name			117	string dns_label
+ATTRIBUTE	Failover-DNS-Zone-Name			118	string dns_label
 
 ATTRIBUTE	Failover-DNS-Flags			119	uint16
 VALUE	Failover-DNS-Flags		Fwd-Up-To-Date		0x01
@@ -43,9 +43,15 @@ ATTRIBUTE	Failover-Max-Partner-Lifetime		123	uint32
 ATTRIBUTE	Failover-Partner-Lifetime-Sent		124	uint32
 ATTRIBUTE	Failover-Partner-Down-Time		125	date
 ATTRIBUTE	Failover-Partner-Raw-CLT-Time		126	date
-ATTRIBUTE	Failover-Protocol-Version		127	octets		# Complex struct see RFC 8156
+ATTRIBUTE	Failover-Protocol-Version		127	struct
+MEMBER		Failover-Protocol-Version-Major		uint16
+MEMBER		Failover-Protocol-Version-Minor		uint16
+
 ATTRIBUTE	Failover-Keepalive-Time			128	uint32
-ATTRIBUTE	Failover-Reconfigure-Data		129	octets		# Complex struct see RFC 8156
+ATTRIBUTE	Failover-Reconfigure-Data		129	struct
+MEMBER		Failover-Reconfigure-Time		date
+MEMBER		Failover-Reconfigure-Key		octets
+
 ATTRIBUTE	Failover-Relationship-Name		130	string
 
 ATTRIBUTE	Failover-Server-Flags			131	uint8

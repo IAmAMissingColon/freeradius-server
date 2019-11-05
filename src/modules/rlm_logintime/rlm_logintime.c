@@ -70,7 +70,7 @@ fr_dict_attr_autoload_t rlm_logintime_dict_attr[] = {
 	{ .out = &attr_login_time, .name = "Login-Time", .type = FR_TYPE_STRING, .dict = &dict_freeradius },
 	{ .out = &attr_time_of_day, .name = "Time-Of-Day", .type = FR_TYPE_STRING, .dict = &dict_freeradius },
 
-	{ .out = &attr_session_timeout, .name = "User-Name", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_session_timeout, .name = "Session-Timeout", .type = FR_TYPE_UINT32, .dict = &dict_radius },
 
 	{ NULL }
 };
@@ -104,7 +104,7 @@ static int time_of_day(UNUSED void *instance, REQUEST *request,
 	time_t		now;
 
 	if (strspn(check->vp_strvalue, "0123456789: ") != strlen(check->vp_strvalue)) {
-		RDEBUG2("Bad Time-Of-Day value \"%s\"", check->vp_strvalue);
+		RDEBUG2("Bad Time-Of-Day value \"%pV\"", &check->data);
 		return -1;
 	}
 
@@ -119,7 +119,7 @@ static int time_of_day(UNUSED void *instance, REQUEST *request,
 	scan = atoi(p);
 	p = strchr(p, ':');
 	if ((scan > 23) || !p) {
-		RDEBUG2("Bad Time-Of-Day value \"%s\"", check->vp_strvalue);
+		RDEBUG2("Bad Time-Of-Day value \"%pV\"", &check->data);
 		return -1;
 	}
 	when = scan * 3600;
@@ -127,7 +127,7 @@ static int time_of_day(UNUSED void *instance, REQUEST *request,
 
 	scan = atoi(p);
 	if (scan > 59) {
-		RDEBUG2("Bad Time-Of-Day value \"%s\"", check->vp_strvalue);
+		RDEBUG2("Bad Time-Of-Day value \"%pV\"", &check->data);
 		return -1;
 	}
 	when += scan * 60;
@@ -136,7 +136,7 @@ static int time_of_day(UNUSED void *instance, REQUEST *request,
 	if (p) {
 		scan = atoi(p + 1);
 		if (scan > 59) {
-			RDEBUG2("Bad Time-Of-Day value \"%s\"", check->vp_strvalue);
+			RDEBUG2("Bad Time-Of-Day value \"%pV\"", &check->data);
 			return -1;
 		}
 		when += scan;
@@ -169,7 +169,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *t
 	 *	Compare the time the request was received with the current Login-Time value
 	 */
 	left = timestr_match(ends->vp_strvalue, fr_time_to_sec(request->packet->timestamp));
-	if (left < 0) return RLM_MODULE_USERLOCK; /* outside of the allowed time */
+	if (left < 0) return RLM_MODULE_DISALLOW; /* outside of the allowed time */
 
 	/*
 	 *      Do nothing, login time is not controlled (unendsed).
@@ -186,7 +186,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *t
 		REDEBUG("Login outside of allowed time-slot (session end %s, with lockout %i seconds before)",
 			ends->vp_strvalue, inst->min_time);
 
-		return RLM_MODULE_USERLOCK;
+		return RLM_MODULE_DISALLOW;
 	}
 
 	/* else left > inst->min_time */

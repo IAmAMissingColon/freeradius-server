@@ -24,8 +24,9 @@ MemoryLimit=2G
 
 RuntimeDirectory=radiusd
 RuntimeDirectoryMode=0775
+User=radiusd
+Group=radiusd 
 ExecStartPre=/usr/sbin/radiusd $FREERADIUS_OPTIONS -Cx -lstdout
-ExecStartPre=/usr/bin/chown radiusd:radiusd /var/run/radiusd
 ExecStart=/usr/sbin/radiusd -f $FREERADIUS_OPTIONS
 Restart=on-failure
 RestartSec=5

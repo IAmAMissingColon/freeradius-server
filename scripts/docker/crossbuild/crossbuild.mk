@@ -11,7 +11,7 @@ else
 #
 #  Short list of common builds
 #
-CB_COMMON:=centos7 debian9 ubuntu18
+CB_COMMON:=centos7 debian10 ubuntu18
 
 # Where the docker "build-" directories are
 DT:=scripts/docker
@@ -55,20 +55,25 @@ crossbuild.info:
 	@echo Common images: $(CB_COMMON)
 
 crossbuild.help: crossbuild.info
-	@echo Make targets:
-	@echo "    crossbuild             - build and test all images"
-	@echo "    crossbuild.common      - build and test common images"
-	@echo "    crossbuild.down        - stop all containers"
-	@echo "    crossbuild.reset       - remove cache of docker state"
-	@echo "    crossbuild.clean       - down and reset all targets"
-	@echo "    crossbuild.wipe        - destroy all crossbuild Docker images"
-	@echo "    crossbuild.IMAGE       - build and test IMAGE"
-	@echo "    crossbuild.IMAGE.log   - show latest build log"
-	@echo "    crossbuild.IMAGE.up    - start container"
-	@echo "    crossbuild.IMAGE.down  - stop container"
-	@echo "    crossbuild.IMAGE.sh    - shell in container"
-	@echo "    crossbuild.IMAGE.clean - stop container and tidy up"
-	@echo "    crossbuild.IMAGE.wipe  - remove Docker image"
+	@echo ""
+	@echo "Make targets:"
+	@echo "    crossbuild               - build and test all images"
+	@echo "    crossbuild.common        - build and test common images"
+	@echo "    crossbuild.info          - list images"
+	@echo "    crossbuild.down          - stop all containers"
+	@echo "    crossbuild.reset         - remove cache of docker state"
+	@echo "    crossbuild.clean         - down and reset all targets"
+	@echo "    crossbuild.wipe          - destroy all crossbuild Docker images"
+	@echo ""
+	@echo "Per-image targets:"
+	@echo "    crossbuild.IMAGE         - build and test image <IMAGE>"
+	@echo "    crossbuild.IMAGE.log     - show latest build log"
+	@echo "    crossbuild.IMAGE.up      - start container"
+	@echo "    crossbuild.IMAGE.down    - stop container"
+	@echo "    crossbuild.IMAGE.sh      - shell in container"
+	@echo "    crossbuild.IMAGE.refresh - push latest commits into container"
+	@echo "    crossbuild.IMAGE.clean   - stop container and tidy up"
+	@echo "    crossbuild.IMAGE.wipe    - remove Docker image"
 
 #
 #  Remove stamp files, so that we try and create images again
@@ -124,8 +129,8 @@ crossbuild.${1}.up: $(DD)/stamp-up.${1}
 #
 #  Run tests in the container
 #
-.PHONY: $(DD)/docker.run.${1}
-$(DD)/docker.run.${1}: $(DD)/stamp-up.${1}
+.PHONY: $(DD)/docker.refresh.${1}
+$(DD)/docker.refresh.${1}: $(DD)/stamp-up.${1}
 	${Q}echo "REFRESH ${1}"
 	${Q}docker container exec $(CB_CPREFIX)${1} sh -c 'rsync -a /srv/src/ /srv/local-src/'
 	${Q}docker container exec $(CB_CPREFIX)${1} sh -c 'git config -f /srv/local-src/config core.bare true'
@@ -134,6 +139,9 @@ $(DD)/docker.run.${1}: $(DD)/stamp-up.${1}
 	${Q}docker container exec $(CB_CPREFIX)${1} sh -c '(cd /srv/build && git pull --rebase)'
 	${Q}docker container exec $(CB_CPREFIX)${1} sh -c '[ -e /srv/build/config.log ] || echo CONFIGURE ${1}'
 	${Q}docker container exec $(CB_CPREFIX)${1} sh -c '[ -e /srv/build/config.log ] || (cd /srv/build && ./configure -C)' > $(DD)/configure.${1} 2>&1
+
+.PHONY: $(DD)/docker.run.${1}
+$(DD)/docker.run.${1}: $(DD)/docker.refresh.${1}
 	${Q}echo "TEST ${1} > $(DD)/log.${1}"
 	${Q}docker container exec $(CB_CPREFIX)${1} sh -c '(cd /srv/build && make && make test)' > $(DD)/log.${1} 2>&1 || echo FAIL ${1}
 
@@ -156,7 +164,7 @@ crossbuild.${1}.clean: crossbuild.${1}.down crossbuild.${1}.reset
 #  /usr/local, which would be confusing)
 #
 .PHONY: crossbuild.${1}.sh
-crossbuild.${1}.sh:
+crossbuild.${1}.sh: crossbuild.${1}.up
 	${Q}docker exec -it $(CB_CPREFIX)${1} sh -c 'cd / ; cd /srv/build 2>/dev/null; bash' || true
 
 #
@@ -190,6 +198,12 @@ crossbuild.${1}.wipe:
 	${Q}echo CLEAN ${1}
 	${Q}docker image rm $(CB_IPREFIX)/${1} >/dev/null 2>&1 || true
 	${Q}rm -f $(DD)/stamp-image.${1}
+
+#
+#  Refresh git repository within the docker image
+#
+.PHONY: crossbuild.${1}.refresh
+crossbuild.${1}.refresh: $(DD)/docker.refresh.${1}
 
 #
 #  Run the build test

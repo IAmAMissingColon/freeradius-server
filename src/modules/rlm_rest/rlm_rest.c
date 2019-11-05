@@ -176,17 +176,21 @@ static int rlm_rest_status_update(REQUEST *request, void *handle)
 	int		code;
 	VALUE_PAIR	*vp;
 
+	RDEBUG2("Updating result attribute(s)");
+
+	RINDENT();
 	code = rest_get_handle_code(handle);
 	if (!code) {
 		pair_delete_request(attr_rest_http_status_code);
-		RDEBUG2("&REST-HTTP-Status-Code !* ANY");
+		RDEBUG2("&request:REST-HTTP-Status-Code !* ANY");
 		return -1;
 	}
 
-	RDEBUG2("&REST-HTTP-Status-Code := %i", code);
+	RDEBUG2("&request:REST-HTTP-Status-Code := %i", code);
 
 	MEM(pair_update_request(&vp, attr_rest_http_status_code) >= 0);
 	vp->vp_uint32 = code;
+	REXDENT();
 
 	return 0;
 }
@@ -427,7 +431,7 @@ static xlat_action_t rest_xlat(TALLOC_CTX *ctx, UNUSED fr_cursor_t *out,
 	ret = rest_io_request_enqueue(t, request, handle);
 	if (ret < 0) goto error;
 
-	return unlang_xlat_yield(request, rest_xlat_resume, rest_io_xlat_action, rctx);
+	return unlang_xlat_yield(request, rest_xlat_resume, rest_io_xlat_signal, rctx);
 }
 
 static rlm_rcode_t mod_authorize_result(void *instance, void *thread, REQUEST *request, void *ctx)
@@ -456,7 +460,7 @@ static rlm_rcode_t mod_authorize_result(void *instance, void *thread, REQUEST *r
 		break;
 
 	case 403:
-		rcode = RLM_MODULE_USERLOCK;
+		rcode = RLM_MODULE_DISALLOW;
 		break;
 
 	case 401:
@@ -496,7 +500,7 @@ static rlm_rcode_t mod_authorize_result(void *instance, void *thread, REQUEST *r
 	switch (rcode) {
 	case RLM_MODULE_INVALID:
 	case RLM_MODULE_FAIL:
-	case RLM_MODULE_USERLOCK:
+	case RLM_MODULE_DISALLOW:
 		rest_response_error(request, handle);
 		break;
 
@@ -570,7 +574,7 @@ static rlm_rcode_t mod_authenticate_result(void *instance, void *thread, REQUEST
 		break;
 
 	case 403:
-		rcode = RLM_MODULE_USERLOCK;
+		rcode = RLM_MODULE_DISALLOW;
 		break;
 
 	case 401:
@@ -610,7 +614,7 @@ static rlm_rcode_t mod_authenticate_result(void *instance, void *thread, REQUEST
 	switch (rcode) {
 	case RLM_MODULE_INVALID:
 	case RLM_MODULE_FAIL:
-	case RLM_MODULE_USERLOCK:
+	case RLM_MODULE_DISALLOW:
 		rest_response_error(request, handle);
 		break;
 
@@ -999,7 +1003,7 @@ static int parse_sub_section(rlm_rest_t *inst, CONF_SECTION *parent, CONF_PARSER
 static int mod_xlat_thread_instantiate(UNUSED void *xlat_inst, void *xlat_thread_inst,
 				       UNUSED xlat_exp_t const *exp, void *uctx)
 {
-	rlm_rest_t			*inst = talloc_get_type_abort(uctx, rlm_rest_t);
+	rlm_rest_t		*inst = talloc_get_type_abort(uctx, rlm_rest_t);
 	rest_xlat_thread_inst_t	*xt = xlat_thread_inst;
 
 	xt->inst = inst;

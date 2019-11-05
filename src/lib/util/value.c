@@ -50,6 +50,7 @@ RCSID("$Id$")
 #include <freeradius-devel/util/strerror.h>
 #include <freeradius-devel/util/talloc.h>
 #include <freeradius-devel/util/value.h>
+#include <freeradius-devel/util/net.h>
 
 #include <assert.h>
 #include <ctype.h>
@@ -190,6 +191,7 @@ static size_t const fr_value_box_network_sizes[FR_TYPE_MAX + 1][2] = {
 	[FR_TYPE_FLOAT64]			= {8, 8},
 
 	[FR_TYPE_DATE]				= {2, 8},  //!< 2, 4, or 8 only
+	[FR_TYPE_TIME_DELTA]   			= {2, 8},  //!< 2, 4, or 8 only
 
 	[FR_TYPE_ABINARY]			= {32, ~0},
 	[FR_TYPE_MAX]				= {~0, 0}		//!< Ensure array covers all types.
@@ -297,7 +299,8 @@ inline void fr_value_box_clear(fr_value_box_t *data)
 		break;
 
 	case FR_TYPE_STRUCTURAL:
-		if (!fr_cond_assert(0)) return;
+		fr_assert_fail(NULL);
+		return;
 
 	case FR_TYPE_INVALID:
 		return;
@@ -955,7 +958,8 @@ int fr_value_box_hton(fr_value_box_t *dst, fr_value_box_t const *src)
 	case FR_TYPE_OCTETS:
 	case FR_TYPE_STRING:
 	case FR_TYPE_NON_VALUES:
-		if (!fr_cond_assert(0)) return -1; /* shouldn't happen */
+		fr_assert_fail(NULL);
+		return -1; /* shouldn't happen */
 	}
 
 	if (dst != src) fr_value_box_copy_meta(dst, src);
@@ -971,6 +975,7 @@ size_t fr_value_box_network_length(fr_value_box_t *value)
 	switch (value->type) {
 	case FR_TYPE_VARIABLE_SIZE:
 	case FR_TYPE_DATE:
+	case FR_TYPE_TIME_DELTA:
 		return value->datum.length;
 
 	default:
@@ -999,9 +1004,10 @@ size_t fr_value_box_network_length(fr_value_box_t *value)
  * - Floats are encoded in IEEE-754 format with a big-endian byte order.  We rely
  *   on the fact that the C standards require floats to be represented in IEEE-754
  *   format in memory.
- * - Dates are encoded as 32bit unsigned UNIX timestamps.
+ * - Dates are encoded as 16/32/64-bit unsigned UNIX timestamps.
+ * - time_deltas are encoded as 16/32/64-bit signed integers.
  *
- * #FR_TYPE_TIME_DELTA and #FR_TYPE_SIZE are not encodable, as they're system specific.
+ * #FR_TYPE_SIZE is not encodable, as it is system specific.
  * #FR_TYPE_ABINARY is RADIUS specific and should be encoded by the RADIUS encoder.
  *
  * This function will not encode complex types (TLVs, VSAs etc...).  These are usually
@@ -1026,6 +1032,9 @@ ssize_t fr_value_box_to_network(size_t *need, uint8_t *dst, size_t dst_len, fr_v
 {
 	size_t min, max;
 	uint8_t *p = dst;
+	uint8_t *end = p + dst_len;
+
+	RETURN_IF_NO_SPACE_INIT(need, 1, p, dst, end);
 
 	/*
 	 *	Variable length types
@@ -1053,6 +1062,7 @@ ssize_t fr_value_box_to_network(size_t *need, uint8_t *dst, size_t dst_len, fr_v
 	}
 
 	case FR_TYPE_DATE:
+	case FR_TYPE_TIME_DELTA:
 		if (value->enumv) {
 			min = max = value->enumv->flags.length;
 		} else {
@@ -1145,28 +1155,35 @@ ssize_t fr_value_box_to_network(size_t *need, uint8_t *dst, size_t dst_len, fr_v
 	}
 		break;
 
+		/*
+		 *	Dates and deltas are stored internally as
+		 *	64-bit nanoseconds.  We have to convert to the
+		 *	network format.  First by resolution (ns, us,
+		 *	ms, s), and then by size (16/32/64-bit).
+		 */
 	case FR_TYPE_DATE:
 	{
-		int64_t date = value->vb_date;
+		uint64_t date;
 
 		if (!value->enumv) {
-			goto seconds;
+			goto date_seconds;
 
 		} else switch (value->enumv->flags.type_size) {
-		seconds:
+		date_seconds:
 		case FR_TIME_RES_SEC:
-			date = value->vb_date / 1000000000;
+			date = fr_unix_time_to_sec(value->vb_date);
 			break;
 
 		case FR_TIME_RES_MSEC:
-			date = value->vb_date / 1000000;
+			date = fr_unix_time_to_msec(value->vb_date);
 			break;
 
 		case FR_TIME_RES_USEC:
-			date = value->vb_date / 1000;
+			date = fr_unix_time_to_usec(value->vb_date);
 			break;
 
 		case FR_TIME_RES_NSEC:
+			date = fr_unix_time_to_usec(value->vb_date);
 			break;
 
 		default:
@@ -1174,39 +1191,28 @@ ssize_t fr_value_box_to_network(size_t *need, uint8_t *dst, size_t dst_len, fr_v
 		}
 
 		if (!value->enumv) {
-			goto size4;
+			goto date_size4;
 
 		} else switch (value->enumv->flags.length) {
 		case 2:
 			if (date >= ((int64_t) 1) << 16) {
 				memset(dst, 0xff, 2);
 			} else {
-				dst[0] = (date >> 8) & 0xff;
-				dst[1] = date & 0xff;
+				fr_put_be16(dst, date);
 			}
 			break;
 
-		size4:
+		date_size4:
 		case 4:
 			if (date >= ((int64_t) 1) << 32) {
 				memset(dst, 0xff, 4);
 			} else {
-				dst[0] = (date >> 24) & 0xff;
-				dst[1] = (date >> 16) & 0xff;
-				dst[2] = (date >> 8) & 0xff;
-				dst[3] = date & 0xff;
+				fr_put_be32(dst, date);
 			}
 			break;
 
 		case 8:
-			dst[0] = (date >> 56) & 0xff;
-			dst[1] = (date >> 48) & 0xff;
-			dst[2] = (date >> 40) & 0xff;
-			dst[3] = (date >> 32) & 0xff;
-			dst[4] = (date >> 24) & 0xff;
-			dst[4] = (date >> 16) & 0xff;
-			dst[6] = (date >> 8) & 0xff;
-			dst[7] = date & 0xff;
+			fr_put_be32(dst, date);
 			break;
 
 		default:
@@ -1216,11 +1222,70 @@ ssize_t fr_value_box_to_network(size_t *need, uint8_t *dst, size_t dst_len, fr_v
 	}
 		break;
 
+	case FR_TYPE_TIME_DELTA:
+	{
+		int64_t date;	/* may be negative */
+
+		if (!value->enumv) {
+			goto delta_seconds;
+
+		} else switch (value->enumv->flags.type_size) {
+		delta_seconds:
+		case FR_TIME_RES_SEC:
+			date = fr_time_delta_to_sec(value->vb_time_delta);
+			break;
+
+		case FR_TIME_RES_MSEC:
+			date = fr_time_delta_to_msec(value->vb_time_delta);
+			break;
+
+		case FR_TIME_RES_USEC:
+			date = fr_time_delta_to_usec(value->vb_time_delta);
+			break;
+
+		case FR_TIME_RES_NSEC:
+			date = value->vb_time_delta;
+			break;
+
+		default:
+			goto unsupported;
+		}
+
+		if (!value->enumv) {
+			goto delta_size4;
+
+		} else switch (value->enumv->flags.length) {
+		case 2:
+			if (date >= ((int64_t) 1) << 16) {
+				memset(dst, 0xff, 2);
+			} else {
+				fr_put_be16(dst, date);
+			}
+			break;
+
+		delta_size4:
+		case 4:
+			if (date >= ((int64_t) 1) << 32) {
+				memset(dst, 0xff, 4);
+			} else {
+				fr_put_be32(dst, date);
+			}
+			break;
+
+		case 8:
+			fr_put_be64(dst, date);
+			break;
+
+		default:
+			goto unsupported;
+		}
+
+	}
+		break;
 
 	case FR_TYPE_OCTETS:
 	case FR_TYPE_STRING:
 	case FR_TYPE_SIZE:
-	case FR_TYPE_TIME_DELTA:
 	case FR_TYPE_ABINARY:
 	case FR_TYPE_NON_VALUES:
 		goto unsupported;
@@ -1355,10 +1420,19 @@ ssize_t fr_value_box_from_network(TALLOC_CTX *ctx,
 		fr_value_box_hton(dst, dst);	/* Operate in-place */
 		break;
 
+		/*
+		 *	Dates and deltas are stored internally as
+		 *	64-bit nanoseconds.  We have to convert from
+		 *	the network format.  First by size
+		 *	(16/32/64-bit), and then by resolution (ns,
+		 *	us, ms, s).
+		 */
 	case FR_TYPE_DATE:
 	{
-		int i, length = 4;
+		size_t i, length = 4;
 		int precision = FR_TIME_RES_SEC;
+		uint64_t date;
+		struct timespec ts;
 
 		if (enumv) {
 			length = enumv->flags.length;
@@ -1366,34 +1440,100 @@ ssize_t fr_value_box_from_network(TALLOC_CTX *ctx,
 		}
 
 		/*
+		 *	Input data doesn't match what we were told we
+		 *	need.
+		 */
+		if (len != length) return -1;
+
+		/*
 		 *	Just loop over the input data until we reach
 		 *	the end.  Shifting it every time.
 		 */
-		dst->vb_date = 0;
+		date = 0;
 		dst->enumv = enumv;
 
 		i = 0;
 		do {
-			dst->vb_date <<= 8;
-			dst->vb_date |= *(p++);
+			date <<= 8;
+			date |= *(p++);
 			i++;
 		} while (i < length);
 
 		switch (precision) {
 		default:
-		case FR_TIME_RES_SEC:
-			dst->vb_date *= 1000000000;
+		case FR_TIME_RES_SEC: /* external seconds, internal nanoseconds */
+			date *= 1000000000;
 			break;
 
 		case FR_TIME_RES_MSEC:
-			dst->vb_date *= 1000000;
+			date *= 1000000;
 			break;
 
 		case FR_TIME_RES_USEC:
-			dst->vb_date *= 1000;
+			date *= 1000;
 			break;
 
 		case FR_TIME_RES_NSEC:
+			break;
+		}
+
+		/*
+		 *	Convert nanoseconds to struct timespec.
+		 */
+		ts.tv_sec = date / NSEC;
+		ts.tv_nsec = date % NSEC;
+
+		dst->vb_date = fr_time_from_timespec(&ts);
+	}
+		break;
+
+	case FR_TYPE_TIME_DELTA:
+	{
+		size_t i, length = 4;
+		int precision = FR_TIME_RES_SEC;
+		uint64_t date;
+
+		if (enumv) {
+			length = enumv->flags.length;
+			precision = enumv->flags.type_size;
+		}
+
+		/*
+		 *	Input data doesn't match what we were told we
+		 *	need.
+		 */
+		if (len != length) return -1;
+
+		/*
+		 *	Just loop over the input data until we reach
+		 *	the end.  Shifting it every time.
+		 */
+		date = 0;
+		dst->enumv = enumv;
+
+		i = 0;
+		do {
+			date <<= 8;
+			date |= *(p++);
+			i++;
+		} while (i < length);
+
+		switch (precision) {
+		default:
+		case FR_TIME_RES_SEC: /* external seconds, internal nanoseconds */
+			dst->vb_time_delta = fr_time_delta_from_sec(date);
+			break;
+
+		case FR_TIME_RES_MSEC:
+			dst->vb_time_delta = fr_time_delta_from_msec(date);
+			break;
+
+		case FR_TIME_RES_USEC:
+			dst->vb_time_delta = fr_time_delta_from_usec(date);
+			break;
+
+		case FR_TIME_RES_NSEC:
+			dst->vb_time_delta = date;
 			break;
 		}
 
@@ -1401,7 +1541,6 @@ ssize_t fr_value_box_from_network(TALLOC_CTX *ctx,
 		break;
 
 	case FR_TYPE_SIZE:
-	case FR_TYPE_TIME_DELTA:
 	case FR_TYPE_ABINARY:
 	case FR_TYPE_NON_VALUES:
 		fr_strerror_printf("Cannot decode type \"%s\" - Is not a value",
@@ -1426,7 +1565,7 @@ ssize_t fr_value_box_from_network(TALLOC_CTX *ctx,
  * @param dst_enumv	enumeration values.
  * @param src		Input data.
  */
-static int fr_value_box_fixed_size_from_ocets(fr_value_box_t *dst,
+static int fr_value_box_fixed_size_from_octets(fr_value_box_t *dst,
 					      fr_type_t dst_type, fr_dict_attr_t const *dst_enumv,
 					      fr_value_box_t const *src)
 {
@@ -2021,15 +2160,13 @@ static inline int fr_value_box_cast_to_ethernet(TALLOC_CTX *ctx, fr_value_box_t 
 		break;
 
 	case FR_TYPE_OCTETS:
-		if (fr_value_box_fixed_size_from_ocets(dst, dst_type, dst_enumv, src) < 0) return -1;
+		if (fr_value_box_fixed_size_from_octets(dst, dst_type, dst_enumv, src) < 0) return -1;
 		break;
 
 	case FR_TYPE_UINT64: {
 		uint8_t array[8];
-		uint64_t i;
 
-		i = htonll(src->vb_uint64);
-		memcpy(array, &i, 8);
+		fr_put_be64(array, src->vb_uint64);
 
 		/*
 		 *	For OUIs in the DB.
@@ -2116,7 +2253,7 @@ static inline int fr_value_box_cast_to_uint8(TALLOC_CTX *ctx, fr_value_box_t *ds
 		break;
 
 	case FR_TYPE_OCTETS:
-		if (fr_value_box_fixed_size_from_ocets(dst, dst_type, dst_enumv, src) < 0) return -1;
+		if (fr_value_box_fixed_size_from_octets(dst, dst_type, dst_enumv, src) < 0) return -1;
 		break;
 
 	default:
@@ -2174,7 +2311,7 @@ static inline int fr_value_box_cast_to_uint16(TALLOC_CTX *ctx, fr_value_box_t *d
 		break;
 
 	case FR_TYPE_OCTETS:
-		if (fr_value_box_fixed_size_from_ocets(dst, dst_type, dst_enumv, src) < 0) return -1;
+		if (fr_value_box_fixed_size_from_octets(dst, dst_type, dst_enumv, src) < 0) return -1;
 		break;
 
 	default:
@@ -2241,35 +2378,41 @@ static inline int fr_value_box_cast_to_uint32(TALLOC_CTX *ctx, fr_value_box_t *d
 		break;
 
 	case FR_TYPE_DATE:
+		/*
+		 *	Dates are represented internally as int64_t
+		 *	nanoseconds since the server started.  But we
+		 *	note that dates can't be negative.
+		 */
+
 		if (!dst->enumv) {
-			goto seconds;
+			goto date_seconds;
 
 		} else {
-			uint64_t cast;
+			fr_unix_time_t cast;
 
 			switch (dst->enumv->flags.type_size) {
 
-			seconds:
+			date_seconds:
 			default:
 			case FR_TIME_RES_SEC:
-				cast = fr_time_to_sec(src->vb_date);
+				cast = fr_unix_time_to_sec(src->vb_date);
 				if (cast >= ((uint64_t) 1) << 32) {
 				invalid_cast:
-					fr_strerror_printf("Invalid cast: result is too large to fit into 32 bits");
+					fr_strerror_printf("Invalid cast: result cannot fit into uint32");
 					return -1;
 				}
 				dst->vb_uint32 = cast;
 				break;
 
 			case FR_TIME_RES_USEC:
-				cast = fr_time_to_usec(src->vb_date);
+				cast = fr_unix_time_to_usec(src->vb_date);
 				if (cast >= ((uint64_t) 1) << 32) goto invalid_cast;
 
 				dst->vb_uint32 = cast;
 				break;
 
 			case FR_TIME_RES_MSEC:
-				cast = fr_time_to_msec(src->vb_date);
+				cast = fr_unix_time_to_msec(src->vb_date);
 				if (cast >= ((uint64_t) 1) << 32) goto invalid_cast;
 
 				dst->vb_uint32 = cast;
@@ -2285,13 +2428,57 @@ static inline int fr_value_box_cast_to_uint32(TALLOC_CTX *ctx, fr_value_box_t *d
 		}
 		break;
 
+	case FR_TYPE_TIME_DELTA:
+		if (src->vb_time_delta < 0) goto invalid_cast;
+
+		if (!dst->enumv) {
+			goto delta_seconds;
+
+		} else {
+			int64_t cast;
+
+			switch (dst->enumv->flags.type_size) {
+
+			delta_seconds:
+			default:
+			case FR_TIME_RES_SEC:
+				cast = fr_time_delta_to_sec(src->vb_time_delta);
+				if (cast >= ((int64_t) 1) << 32) goto invalid_cast;
+
+				dst->vb_uint32 = cast;
+				break;
+
+			case FR_TIME_RES_USEC:
+				cast = fr_time_delta_to_usec(src->vb_time_delta);
+				if (cast >= ((int64_t) 1) << 32) goto invalid_cast;
+
+				dst->vb_uint32 = cast;
+				break;
+
+			case FR_TIME_RES_MSEC:
+				cast = fr_time_delta_to_msec(src->vb_time_delta);
+				if (cast >= ((int64_t) 1) << 32) goto invalid_cast;
+
+				dst->vb_uint32 = cast;
+				break;
+
+			case FR_TIME_RES_NSEC:
+				cast = src->vb_time_delta;
+				if (cast >= ((int64_t) 1) << 32) goto invalid_cast;
+
+				dst->vb_uint32 = cast;
+				break;
+			}
+		}
+		break;
+
 	case FR_TYPE_STRING:
 		if (fr_value_box_from_str(ctx, dst, &dst_type, dst_enumv,
 				          src->vb_strvalue, src->datum.length, '\0', src->tainted) < 0) return -1;
 		break;
 
 	case FR_TYPE_OCTETS:
-		if (fr_value_box_fixed_size_from_ocets(dst, dst_type, dst_enumv, src) < 0) return -1;
+		if (fr_value_box_fixed_size_from_octets(dst, dst_type, dst_enumv, src) < 0) return -1;
 		break;
 
 	default:
@@ -2373,25 +2560,58 @@ static inline int fr_value_box_cast_to_uint64(TALLOC_CTX *ctx, fr_value_box_t *d
 
 	case FR_TYPE_DATE:
 		if (!dst->enumv) {
-			goto seconds;
+			goto date_seconds;
 
 		} else switch (dst->enumv->flags.type_size) {
-		seconds:
+		date_seconds:
 		default:
 		case FR_TIME_RES_SEC:
-			dst->vb_uint64 = fr_time_to_sec(src->vb_date);
+			dst->vb_uint64 = fr_unix_time_to_sec(src->vb_date);
 			break;
 
 		case FR_TIME_RES_USEC:
-			dst->vb_uint64 = fr_time_to_sec(src->vb_date);
+			dst->vb_uint64 = fr_unix_time_to_usec(src->vb_date);
 			break;
 
 		case FR_TIME_RES_MSEC:
-			dst->vb_uint64 = fr_time_to_sec(src->vb_date);
+			dst->vb_uint64 = fr_unix_time_to_msec(src->vb_date);
 			break;
 
 		case FR_TIME_RES_NSEC:
 			dst->vb_uint64 = src->vb_date;
+			break;
+		}
+		break;
+
+	case FR_TYPE_TIME_DELTA:
+		/*
+		 *	uint64 can't hold all of int64
+		 */
+		if (src->vb_time_delta < 0) {
+			fr_strerror_printf("Invalid cast: result cannot fit into uint64");
+			return -1;
+		}
+
+		if (!dst->enumv) {
+			goto delta_seconds;
+
+		} else switch (dst->enumv->flags.type_size) {
+		delta_seconds:
+		default:
+		case FR_TIME_RES_SEC:
+			dst->vb_uint64 = fr_time_delta_to_sec(src->vb_time_delta);
+			break;
+
+		case FR_TIME_RES_USEC:
+			dst->vb_uint64 = fr_time_delta_to_usec(src->vb_time_delta);
+			break;
+
+		case FR_TIME_RES_MSEC:
+			dst->vb_uint64 = fr_time_delta_to_msec(src->vb_time_delta);
+			break;
+
+		case FR_TIME_RES_NSEC:
+			dst->vb_uint64 = src->vb_time_delta;
 			break;
 		}
 		break;
@@ -2402,7 +2622,7 @@ static inline int fr_value_box_cast_to_uint64(TALLOC_CTX *ctx, fr_value_box_t *d
 		break;
 
 	case FR_TYPE_OCTETS:
-		if (fr_value_box_fixed_size_from_ocets(dst, dst_type, dst_enumv, src) < 0) return -1;
+		if (fr_value_box_fixed_size_from_octets(dst, dst_type, dst_enumv, src) < 0) return -1;
 		break;
 
 	default:
@@ -2551,7 +2771,8 @@ int fr_value_box_cast(TALLOC_CTX *ctx, fr_value_box_t *dst,
 	case FR_TYPE_GROUP:
 	case FR_TYPE_INVALID:
 	case FR_TYPE_MAX:
-		if (!fr_cond_assert(0)) return -1;
+		fr_assert_fail(NULL);
+		return -1;
 	}
 
 	/*
@@ -2563,8 +2784,7 @@ int fr_value_box_cast(TALLOC_CTX *ctx, fr_value_box_t *dst,
 
 	if ((src->type == FR_TYPE_IFID) &&
 	    (dst_type == FR_TYPE_UINT64)) {
-		memcpy(&dst->vb_uint64, src->vb_ifid, sizeof(src->vb_ifid));
-		dst->vb_uint64 = htonll(dst->vb_uint64);
+		dst->vb_uint64 = fr_get_be64(&src->vb_ifid[0]);
 
 	fixed_length:
 		dst->type = dst_type;
@@ -2702,6 +2922,7 @@ int fr_value_box_cast(TALLOC_CTX *ctx, fr_value_box_t *dst,
 	if ((src->type == FR_TYPE_IPV4_ADDR) &&
 		   ((dst_type == FR_TYPE_UINT32) ||
 		    (dst_type == FR_TYPE_DATE) ||
+		    (dst_type == FR_TYPE_TIME_DELTA) ||
 		    (dst_type == FR_TYPE_INT32))) {
 		dst->vb_uint32 = htonl(src->vb_ip.addr.v4.s_addr);
 
@@ -3623,7 +3844,8 @@ static int fr_value_box_from_integer_str(fr_value_box_t *dst, fr_type_t dst_type
 		break;
 
 	default:
-		if (!fr_cond_assert(0)) return -1;
+		fr_assert_fail(NULL);
+		return -1;
 	}
 
 #define IN_RANGE_UNSIGNED(_type) \
@@ -3690,7 +3912,8 @@ static int fr_value_box_from_integer_str(fr_value_box_t *dst, fr_type_t dst_type
 		break;
 
 	default:
-		if (!fr_cond_assert(0)) return -1;
+		fr_assert_fail(NULL);
+		return -1;
 	}
 
 	return 0;
@@ -3945,7 +4168,8 @@ parse:
 	case FR_TYPE_STRUCTURAL_EXCEPT_VSA:
 	case FR_TYPE_VENDOR:
 	case FR_TYPE_BAD:
-		fr_strerror_printf("Invalid dst_type %d", *dst_type);
+		fr_strerror_printf("Invalid dst_type %s",
+				   fr_table_str_by_value(fr_value_box_type_table, *dst_type, "<INVALID>"));
 		return -1;
 	}
 
@@ -4020,7 +4244,7 @@ parse:
 
 	case FR_TYPE_DATE:
 	{
-		if (fr_time_from_str(&dst->vb_date, in) < 0) return -1;
+		if (fr_unix_time_from_str(&dst->vb_date, in) < 0) return -1;
 
 		dst->enumv = dst_enumv;
 	}
@@ -4370,7 +4594,7 @@ char *fr_value_box_asprint(TALLOC_CTX *ctx, fr_value_box_t const *data, char quo
 #ifdef WITH_ASCEND_BINARY
 		p = talloc_array(ctx, char, 128);
 		if (!p) return NULL;
-		print_abinary(p, 128, (uint8_t const *) &data->datum.filter, data->datum.length, 0);
+		print_abinary(NULL, p, 128, (uint8_t const *) &data->datum.filter, data->datum.length, 0);
 		break;
 #else
 		  /* FALL THROUGH */
@@ -4759,14 +4983,14 @@ size_t fr_value_box_snprint(char *out, size_t outlen, fr_value_box_t const *data
 		return snprintf(out, outlen, "%g", data->vb_float64);
 
 	case FR_TYPE_DATE:
-		t = fr_time_to_sec(data->vb_date);
-		(void) localtime_r(&t, &s_tm);
+		t = fr_unix_time_to_sec(data->vb_date);
+		(void) gmtime_r(&t, &s_tm);
 
 		if (!data->enumv || (data->enumv->flags.type_size == FR_TIME_RES_SEC)) {
 			if (quote > 0) {
-				len = strftime(buf, sizeof(buf) - 1, "%%%b %e %Y %H:%M:%S %Z", &s_tm);
+				len = strftime(buf, sizeof(buf) - 1, "%%%b %e %Y %H:%M:%S UTC", &s_tm);
 			} else {
-				len = strftime(buf, sizeof(buf), "%b %e %Y %H:%M:%S %Z", &s_tm);
+				len = strftime(buf, sizeof(buf), "%b %e %Y %H:%M:%S UTC", &s_tm);
 			}
 
 		} else {
@@ -4828,15 +5052,16 @@ size_t fr_value_box_snprint(char *out, size_t outlen, fr_value_box_t const *data
 			buf[0] = (char) quote;
 			buf[len] = (char) quote;
 			buf[len + 1] = '\0';
+			len++;	/* Account for trailing quote */
 		}
 		a = buf;
 		break;
 
 	case FR_TYPE_ABINARY:
 #ifdef WITH_ASCEND_BINARY
-		print_abinary(buf, sizeof(buf), (uint8_t const *) data->datum.filter, data->datum.length, quote);
+		len = print_abinary(NULL, buf, sizeof(buf),
+				    (uint8_t const *) data->datum.filter, data->datum.length, quote);
 		a = buf;
-		len = strlen(buf);
 		break;
 #else
 	/* FALL THROUGH */

@@ -26,23 +26,12 @@
 extern "C" {
 #endif
 
-/** Parameters for initialising the subrequest
- *
- * State of one level of nesting within an xlat expansion.
- */
-typedef struct {
-	rlm_rcode_t		*presult;		//!< Where to store the result.
-	REQUEST			*child;			//!< Pre-allocated child request.
-	bool			persist : 1;		//!< Whether we should free the child after it completes.
-	bool			detachable : 1;		//!< Whether the request can be detached.
-} unlang_frame_state_subrequest_t;
-
 void	unlang_subrequest_free(REQUEST **child);
 
-void	unlang_subrequest_push(rlm_rcode_t *out, REQUEST *child, bool top_frame);
+void unlang_subrequest_push(rlm_rcode_t *out, REQUEST *child,
+			    unlang_subrequest_session_t const *session, bool top_frame);
 
-unlang_action_t unlang_detach(REQUEST *request,
-			      rlm_rcode_t *presult, int *priority);
+int unlang_detached_child_init(REQUEST *request);
 
 #ifdef __cplusplus
 }

@@ -21,7 +21,7 @@
  *
  * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  *
- * @copyright 2013 Network RADIUS SARL (info@networkradius.com)
+ * @copyright 2013 Network RADIUS SARL (legal@networkradius.com)
  * @copyright 2013-2015 The FreeRADIUS Server Project.
  */
 RCSID("$Id$")
@@ -799,8 +799,8 @@ rlm_rcode_t rlm_ldap_check_userobj_dynamic(rlm_ldap_t const *inst, REQUEST *requ
 			    (memcmp(check->vp_strvalue, resolved, check->vp_length) == 0)) eq = true;
 			talloc_free(resolved);
 			if (eq) {
-				RDEBUG2("User found in group \"%s\". Comparison between membership: name "
-				       "(resolved from DN \"%s\"), check: name", check->vp_strvalue, value);
+				RDEBUG2("User found in group \"%pV\". Comparison between membership: name "
+				       "(resolved from DN \"%s\"), check: name", &check->data, value);
 				rcode = RLM_MODULE_OK;
 
 				goto finish;

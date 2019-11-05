@@ -23,12 +23,13 @@
  * @copyright 2016 Alan DeKok (aland@deployingradius.com)
  */
 #include <freeradius-devel/io/application.h>
-#include <freeradius-devel/server/protocol.h>
+#include <freeradius-devel/io/base.h>
+#include <freeradius-devel/radius/radius.h>
 #include <freeradius-devel/server/module.h>
+#include <freeradius-devel/server/protocol.h>
+#include <freeradius-devel/server/rad_assert.h>
 #include <freeradius-devel/unlang/base.h>
 #include <freeradius-devel/util/dict.h>
-#include <freeradius-devel/io/base.h>
-#include <freeradius-devel/server/rad_assert.h>
 
 static fr_dict_t *dict_freeradius;
 static fr_dict_t *dict_radius;
@@ -57,7 +58,7 @@ fr_dict_attr_autoload_t proto_radius_dynamic_client_dict_attr[] = {
 	{ NULL }
 };
 
-static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request)
+static rlm_rcode_t mod_process(UNUSED void const *instance, REQUEST *request)
 {
 	rlm_rcode_t rcode;
 	CONF_SECTION *unlang;
@@ -82,11 +83,11 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request)
 		/* FALL-THROUGH */
 
 	case REQUEST_RECV:
-		rcode = unlang_interpret_resume(request);
+		rcode = unlang_interpret(request);
 
-		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
+		if (request->master_state == REQUEST_STOP_PROCESSING) return RLM_MODULE_HANDLED;
 
-		if (rcode == RLM_MODULE_YIELD) return FR_IO_YIELD;
+		if (rcode == RLM_MODULE_YIELD) return RLM_MODULE_YIELD;
 
 		rad_assert(request->log.unlang_indent == 0);
 
@@ -118,11 +119,11 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request)
 		/* FALL-THROUGH */
 
 	case REQUEST_SEND:
-		rcode = unlang_interpret_resume(request);
+		rcode = unlang_interpret(request);
 
-		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
+		if (request->master_state == REQUEST_STOP_PROCESSING) return RLM_MODULE_HANDLED;
 
-		if (rcode == RLM_MODULE_YIELD) return FR_IO_YIELD;
+		if (rcode == RLM_MODULE_YIELD) return RLM_MODULE_YIELD;
 
 		rad_assert(request->log.unlang_indent == 0);
 
@@ -188,10 +189,10 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request)
 		break;
 
 	default:
-		return FR_IO_FAIL;
+		return RLM_MODULE_FAIL;
 	}
 
-	return FR_IO_REPLY;
+	return RLM_MODULE_OK;
 }
 
 

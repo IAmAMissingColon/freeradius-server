@@ -1,3 +1,4 @@
+#pragma once
 /*
  *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -33,7 +34,7 @@ extern "C" {
 
 /* filters.c */
 int		ascend_parse_filter(fr_value_box_t *out, char const *value, size_t len);
-void		print_abinary(char *out, size_t outlen, uint8_t const *data, size_t len, int8_t quote);
+size_t		print_abinary(size_t *need, char *out, size_t outlen, uint8_t const *data, size_t len, int8_t quote);
 #endif /*WITH_ASCEND_BINARY*/
 
 #ifdef __cplusplus

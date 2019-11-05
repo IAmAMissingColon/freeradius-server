@@ -73,29 +73,64 @@ static uint32_t location_indent = 30;
  */
 void fr_canonicalize_error(TALLOC_CTX *ctx, char **sp, char **text, ssize_t slen, char const *fmt)
 {
-	size_t offset, skip = 0;
-	char *spbuf, *p;
+	size_t offset, prefix, suffix;
+	char *spaces, *p;
+	char const *start;
 	char *value;
+	size_t inlen;
 
 	offset = -slen;
 
-	/*
-	 *	Ensure that the error isn't indented
-	 *	too far.
-	 */
-	if (offset > 45) {
-		skip = offset - 40;
-		offset -= skip;
-		value = talloc_strdup(ctx, fmt + skip);
-		memcpy(value, "...", 4);
+	inlen = strlen(fmt);
+	start = fmt;
+	prefix = suffix = 0;
 
-	} else {
-		value = talloc_strdup(ctx, fmt);
+#ifndef NDEBUG
+	/*
+	 *	Shut up the compiler
+	 */
+	if (offset >= inlen) {
+		*sp = NULL;
+		*text = NULL;
+		return;
+	}
+#endif
+
+	/*
+	 *	Too many characters before the inflection point.  Skip
+	 *	leading text until we have only 45 characters before it.
+	 */
+	if (offset > 30) {
+		size_t skip = offset - 30;
+
+		start += skip;
+		inlen -= skip;
+		offset -= skip;
+		prefix = 4;
 	}
 
-	spbuf = talloc_array(ctx, char, offset + 1);
-	memset(spbuf, ' ', offset);
-	spbuf[offset] = '\0';
+	/*
+	 *	Too many characters after the inflection point,
+	 *	truncate it to 30 characters after the inflection
+	 *	point.
+	 */
+	if (inlen > (offset + 30)) {
+		inlen = offset + 30;
+		suffix = 4;
+	}
+
+	/*
+	 *	Allocate an array to hold just the text we need.
+	 */
+	value = talloc_array(ctx, char, prefix + inlen + 1 + suffix);
+	if (prefix) {
+		memcpy(value, "... ", 4);
+	}
+	memcpy(value + prefix, start, inlen);
+	if (suffix) {
+		memcpy(value + prefix + inlen, "...", 3);
+	}
+	value[prefix + inlen + suffix] = '\0';
 
 	/*
 	 *	Smash tabs to spaces for the input string.
@@ -104,15 +139,14 @@ void fr_canonicalize_error(TALLOC_CTX *ctx, char **sp, char **text, ssize_t slen
 		if (*p == '\t') *p = ' ';
 	}
 
-
 	/*
-	 *	Ensure that there isn't too much text after the error.
+	 *	Allocate the spaces array
 	 */
-	if (strlen(value) > 100) {
-		memcpy(value + 95, "... ", 5);
-	}
+	spaces = talloc_array(ctx, char, prefix + offset + 1);
+	memset(spaces, ' ', prefix + offset);
+	spaces[prefix + offset] = '\0';
 
-	*sp = spbuf;
+	*sp = spaces;
 	*text = value;
 }
 
@@ -307,7 +341,7 @@ int fr_vlog(fr_log_t const *log, fr_log_type_t type, char const *file, int line,
 		 *	Only print the 'facility' if we're not colourising the log messages
 		 *	and this isn't syslog.
 		 */
-		if (!log->colourise) fmt_facility = fr_table_str_by_value(fr_log_levels, type, ": ");
+		if (!log->colourise && log->print_level) fmt_facility = fr_table_str_by_value(fr_log_levels, type, ": ");
 
 		/*
 		 *	Add an additional prefix to highlight that this is a bad message
@@ -561,7 +595,10 @@ DIAG_OFF(format-nonliteral)
 void fr_log_hex(fr_log_t const *log, fr_log_type_t type, char const *file, int line,
 		uint8_t const *data, size_t data_len, char const *fmt, ...)
 {
-	size_t	i, len;
+	size_t	i, j, len;
+	char	*p;
+	char	buffer[(0x10 * 3) + 1];
+
 	char	*prefix = NULL;
 
 	if (fmt) {
@@ -576,11 +613,13 @@ void fr_log_hex(fr_log_t const *log, fr_log_type_t type, char const *file, int l
 		len = 0x10;
 		if ((i + len) > data_len) len = data_len - i;
 
+		for (p = buffer, j = 0; j < len; j++, p += 3) sprintf(p, "%02x ", data[i + j]);
+
 		if (fmt) {
-			fr_log(log, type, file, line, "%pV%04x: %pV",
-			       fr_box_strvalue_buffer(prefix), (int)i, fr_box_octets(data + i, len));
+			fr_log(log, type, file, line, "%pV%04x: %s",
+			       fr_box_strvalue_buffer(prefix), (int)i, buffer);
 		} else {
-			fr_log(log, type, file, line, "%04x: %pV", (int)i, fr_box_octets(data + i, len));
+			fr_log(log, type, file, line, "%04x: %s", (int)i, buffer);
 		}
 	}
 
@@ -703,6 +742,7 @@ int fr_log_init(fr_log_t *log, bool daemonize)
 		 */
 		dup2(devnull, STDOUT_FILENO);
 		dup2(devnull, STDERR_FILENO);
+		log->print_level = false;
 
 	} else if (fr_debug_lvl) {
 		/*

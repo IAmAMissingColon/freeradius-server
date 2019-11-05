@@ -24,6 +24,7 @@
 RCSID("$Id$")
 
 #include <freeradius-devel/util/struct.h>
+#include <freeradius-devel/util/proto.h>
 
 VALUE_PAIR *fr_unknown_from_network(TALLOC_CTX *ctx, fr_dict_attr_t const *parent, uint8_t const *data, size_t data_len)
 {
@@ -41,11 +42,12 @@ VALUE_PAIR *fr_unknown_from_network(TALLOC_CTX *ctx, fr_dict_attr_t const *paren
 					     fr_dict_vendor_num_by_da(parent), parent->attr);
 	if (!child) return NULL;
 
-	vp = fr_pair_afrom_da(ctx, child);
+	vp = fr_pair_afrom_da(ctx, child); /* makes a copy of 'child' */
+	fr_dict_unknown_free(&child);
 	if (!vp) return NULL;
 
 	if (fr_value_box_from_network(vp, &vp->data, vp->da->type, vp->da, data, data_len, true) < 0) {
-		TALLOC_FREE(vp);
+		fr_pair_list_free(&vp);
 		return NULL;
 	}
 
@@ -71,8 +73,10 @@ ssize_t fr_struct_from_network(TALLOC_CTX *ctx, fr_cursor_t *cursor,
 
 	if (data_len < 1) return -1; /* at least one byte of data */
 
+	FR_PROTO_HEX_DUMP(data, data_len, "fr_struct_from_network");
+
 	/*
-	 *  Record where we were in the list when this function was called
+	 *	Record where we were in the list when this function was called
 	 */
 	fr_cursor_init(&child_cursor, &head);
 	*child_p = NULL;
@@ -87,6 +91,8 @@ ssize_t fr_struct_from_network(TALLOC_CTX *ctx, fr_cursor_t *cursor,
 		 */
 		child = fr_dict_attr_child_by_num(parent, child_num);
 		if (!child) break;
+
+		FR_PROTO_HEX_DUMP(p, (end - p), "fr_struct_from_network - child %d", child->attr);
 
 		/*
 		 *	Decode child TLVs, according to the parent attribute.
@@ -104,10 +110,17 @@ ssize_t fr_struct_from_network(TALLOC_CTX *ctx, fr_cursor_t *cursor,
 		}
 
 		child_length = child->flags.length;
-		if (!child_length) child_length = (end - p);
 
-		vp = fr_pair_afrom_da(ctx, child);
-		if (!vp) return -1;
+		/*
+		 *	If this field overflows the input, then *all*
+		 *	of the input is suspect.
+		 */
+		if ((p + child_length) > end) {
+			FR_PROTO_TRACE("fr_struct_from_network - child length %zd overflows buffer", child_length);
+			goto unknown;
+		}
+
+		if (!child_length) child_length = (end - p);
 
 		/*
 		 *	We only allow a limited number of data types
@@ -115,11 +128,17 @@ ssize_t fr_struct_from_network(TALLOC_CTX *ctx, fr_cursor_t *cursor,
 		 */
 		switch (child->type) {
 		default:
-			fr_strerror_printf("Invalid data type passed to decode_struct");
-			return -1;
+			FR_PROTO_TRACE("fr_struct_from_network - unknown child type");
+			goto unknown;
 
 		case FR_TYPE_VALUES:
 			break;
+		}
+
+		vp = fr_pair_afrom_da(ctx, child);
+		if (!vp) {
+			FR_PROTO_TRACE("fr_struct_from_network - failed allocating child VP");
+			goto unknown;
 		}
 
 		/*
@@ -129,14 +148,18 @@ ssize_t fr_struct_from_network(TALLOC_CTX *ctx, fr_cursor_t *cursor,
 		 *	structure is treated as a raw blob.
 		 */
 		if (fr_value_box_from_network(vp, &vp->data, vp->da->type, vp->da, p, child_length, true) < 0) {
-			TALLOC_FREE(vp);
+			FR_PROTO_TRACE("fr_struct_from_network - failed decoding child VP");
+			fr_pair_list_free(&vp);
+		unknown:
 			fr_pair_list_free(&head);
-			fr_cursor_init(&child_cursor, &head);
 
 			vp = fr_unknown_from_network(ctx, parent, data, data_len);
 			if (!vp) return -1;
 
-			fr_cursor_append(&child_cursor, vp);
+			/*
+			 *	And append this one VP to the output cursor.
+			 */
+			fr_cursor_append(cursor, vp);
 			return data_len;
 		}
 
@@ -144,7 +167,7 @@ ssize_t fr_struct_from_network(TALLOC_CTX *ctx, fr_cursor_t *cursor,
 		vp->vp_tainted = true;
 		fr_cursor_append(&child_cursor, vp);
 
-		if (vp->da->flags.extra) key_vp = vp;
+		if (da_is_key_field(vp->da)) key_vp = vp;
 
 		/*
 		 *	Note that we're decoding fixed fields here.
@@ -155,20 +178,23 @@ ssize_t fr_struct_from_network(TALLOC_CTX *ctx, fr_cursor_t *cursor,
 		child_num++;	/* go to the next child */
 	}
 
-	fr_cursor_head(&child_cursor);
-	fr_cursor_tail(cursor);
-	fr_cursor_merge(cursor, &child_cursor);	/* Wind to the end of the new pairs */
-
 	/*
 	 *	Is there a substructure after this one?  If so, go
 	 *	decode it.
 	 */
 	if (key_vp) {
-		ssize_t sublen;
+		ssize_t slen;
+
+		FR_PROTO_HEX_DUMP(p, (end - p), "fr_struct_from_network - substruct");
+
+		/*
+		 *	Nothing more to decode, don't decode it.
+		 */
+		if (p >= end) goto done;
 
 		switch (key_vp->da->type) {
 		default:
-			return data_len;
+			goto done;
 
 		case FR_TYPE_UINT8:
 			child_num = key_vp->vp_uint8;
@@ -184,20 +210,48 @@ ssize_t fr_struct_from_network(TALLOC_CTX *ctx, fr_cursor_t *cursor,
 		}
 
 		child = fr_dict_attr_child_by_num(key_vp->da, child_num);
-		if (!child || (child->type != FR_TYPE_STRUCT)) {
-			return data_len;
+		if (!child) {
+			child = fr_dict_unknown_afrom_fields(ctx, key_vp->da,
+							     fr_dict_vendor_num_by_da(key_vp->da), child_num);
+			if (!child) goto unknown;
+			goto unknown_child; /* we know it's not a struct */
 		}
 
-		sublen = fr_struct_from_network(ctx, cursor, child, p, end - p, child_p);
-		if (sublen < 0) return -1;
+		if (child->type == FR_TYPE_STRUCT) {
+			slen = fr_struct_from_network(ctx, &child_cursor, child, p, end - p, child_p);
+			if (slen < 0) goto unknown_child;
+			p += slen;
+
+		} else {
+		unknown_child:
+			vp = fr_unknown_from_network(ctx, child, p, end - p);
+			if (!vp) {
+				fr_dict_unknown_free(&child);
+				return -(p - data);
+			}
+
+			fr_cursor_append(&child_cursor, vp);
+			p = end;
+		}
+
+		fr_dict_unknown_free(&child);
+
+		fr_cursor_head(&child_cursor);
+		fr_cursor_tail(cursor);
+		fr_cursor_merge(cursor, &child_cursor);	/* Wind to the end of the new pairs */
 
 		/*
 		 *	Else return whatever we decoded.  Note that if
-		 *	the substruct ends in a TLV, we only decode
+		 *	the substruct ends in a TLV, we decode only
 		 *	the fixed-length portion of the structure.
 		 */
-		return (end -p) + sublen;
+		return p - data;
 	}
+
+done:
+	fr_cursor_head(&child_cursor);
+	fr_cursor_tail(cursor);
+	fr_cursor_merge(cursor, &child_cursor);	/* Wind to the end of the new pairs */
 
 	return data_len;
 }
@@ -211,9 +265,13 @@ ssize_t fr_struct_to_network(uint8_t *out, size_t outlen,
 	uint8_t			*p = out;
 	VALUE_PAIR const	*vp = fr_cursor_current(cursor);
 	fr_dict_attr_t const   	*key_da;
-	uint8_t			*key_data;
 
-	VP_VERIFY(fr_cursor_current(cursor));
+	if (!vp) {
+		fr_strerror_printf("%s: Can't encode empty struct", __FUNCTION__);
+		return -1;
+	}
+
+	VP_VERIFY(vp);
 
 	if (parent->type != FR_TYPE_STRUCT) {
 		fr_strerror_printf("%s: Expected type \"struct\" got \"%s\"", __FUNCTION__,
@@ -221,13 +279,18 @@ ssize_t fr_struct_to_network(uint8_t *out, size_t outlen,
 		return -1;
 	}
 
-	if (!vp || (vp->da->parent != parent)) {
-		fr_strerror_printf("%s: Can't encode empty struct", __FUNCTION__);
+	/*
+	 *	@todo - if we get a child which *eventually* has the
+	 *	given parent, then allow encoding of that struct, too.
+	 *	This allows us to encode structures automatically,
+	 *	even if key fields are omitted.
+	 */
+	if (vp->da->parent != parent) {
+		fr_strerror_printf("%s: struct encoding is missing previous attributes", __FUNCTION__);
 		return -1;
 	}
 
 	key_da = NULL;
-	key_data = NULL;
 
 	while (outlen) {
 		fr_dict_attr_t const *child;
@@ -242,9 +305,8 @@ ssize_t fr_struct_to_network(uint8_t *out, size_t outlen,
 
 			if (!child) break;
 
-			if (child->flags.extra) {
+			if (da_is_key_field(child)) {
 				key_da = child;
-				key_data = p;
 			}
 
 			if (child->flags.length > outlen) {
@@ -261,14 +323,33 @@ ssize_t fr_struct_to_network(uint8_t *out, size_t outlen,
 		}
 
 		/*
-		 *	Determine the nested type and call the appropriate encoder
+		 *	Encode fixed-size octets fields so that they
+		 *	are exactly the fixed size, UNLESS the entire
+		 *	output is truncated.
 		 */
-		len = fr_value_box_to_network(NULL, p, outlen, &vp->data);
-		if (len <= 0) return -1;
+		if ((vp->da->type == FR_TYPE_OCTETS) && vp->da->flags.length) {
+			size_t mylen = vp->da->flags.length;
 
-		if (child->flags.extra) {
+			if (mylen > outlen) mylen = outlen;
+
+			if (vp->vp_length < mylen) {
+				memcpy(p, vp->vp_ptr, vp->vp_length);
+				memset(p + vp->vp_length, 0, mylen - vp->vp_length);
+			} else {
+				memcpy(p, vp->vp_ptr, mylen);
+			}
+			len = mylen;
+
+		} else {
+			/*
+			 *	Determine the nested type and call the appropriate encoder
+			 */
+			len = fr_value_box_to_network(NULL, p, outlen, &vp->data);
+			if (len <= 0) return -1;
+		}
+
+		if (da_is_key_field(child)) {
 			key_da = child;
-			key_data = p;
 		}
 
 		p += len;
@@ -284,50 +365,43 @@ ssize_t fr_struct_to_network(uint8_t *out, size_t outlen,
 		 *	Nothing more to do, or we've done all of the
 		 *	entries in this structure, stop.
 		 */
-		if (!vp || (vp->da->parent != parent)) break;
+		if (!vp || (vp->da->parent != parent)) {
+			break;
+		}
 	}
 
 	if (!vp || !outlen) return p - out;
 
 	/*
-	 *	Encode the key field based on the value of the next
-	 *	attribute.  Note that there isn't much point in
-	 *	converting key_da->attr into a value_box_t, and then
-	 *	calling fr_value_box_to_network() to do the work.  The
-	 *	code below isn't much larger in the source, but is
-	 *	rather substantially simpler over all.
+	 *	Check for keyed data to encode.
 	 */
-	if (key_da && (vp->da->parent == key_da)) {
-		switch (key_da->type) {
-		case FR_TYPE_UINT8:
-			*key_data = key_da->attr;
-			break;
-
-		case FR_TYPE_UINT16:
-			if ((p - key_data) < 2) return p - out;
-
-			key_data[0] = (key_da->attr >> 8) & 0xff;
-			key_data[1] = key_da->attr & 0xff;
-			break;
-
-		case FR_TYPE_UINT32:
-			if ((p - key_data) < 4) return p - out;
-
-			key_data[0] = (key_da->attr >> 24) & 0xff;
-			key_data[1] = (key_da->attr >> 16) & 0xff;
-			key_data[2] = (key_da->attr >> 8) & 0xff;
-			key_data[3] = key_da->attr & 0xff;
-			break;
-
-		default:
-			return p - out;
+	if (key_da) {
+		/*
+		 *	If our parent is a struct, AND it's parent is
+		 *	the key_da, then we have a keyed struct for
+		 *	the child.  Go encode it.
+		 */
+		if ((vp->da->parent->parent == key_da) &&
+		    (vp->da->parent->type == FR_TYPE_STRUCT)) {
+			len = fr_struct_to_network(p, outlen,
+						   vp->da->parent, cursor);
+			if (len < 0) return len;
+			return (p - out) + len;
 		}
 
 		/*
-		 *	We don't need to recurse.  the caller will see
-		 *	that the next attribute is of type 'struct',
-		 *	and will call this function again to encode
-		 *	it.
+		 *	The next VP is likely octets and unknown.
+		 */
+		if ((vp->da->parent == key_da) &&
+		    (vp->da->type != FR_TYPE_TLV)) {
+			len = fr_value_box_to_network(NULL, p, outlen, &vp->data);
+			if (len <= 0) return -1;
+			(void) fr_cursor_next(cursor);
+			return (p - out) + len;
+		}
+
+		/*
+		 *	We have no idea what to do.  Ignore it.
 		 */
 	}
 

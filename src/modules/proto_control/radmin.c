@@ -133,6 +133,8 @@ typedef struct {
 static bool echo = false;
 static char const *secret = NULL;
 static bool unbuffered = false;
+static bool use_readline = true;
+
 static fr_log_t radmin_log = {
 	.dst = L_DST_NULL,
 	.colourise = false,
@@ -153,8 +155,7 @@ static char *radmin_expansions[CMD_MAX_EXPANSIONS] = {0};
 static int stack_depth;
 static char cmd_buffer[65536];
 static char *stack[MAX_STACK];
-static char const *prompt = "radmin> ";
-static char prompt_buffer[1024];
+static fr_cmd_t *local_cmds = NULL;
 
 static void NEVER_RETURNS usage(int status)
 {
@@ -428,20 +429,26 @@ static int do_connect(int *out, char const *file, char const *server)
 }
 
 
-#ifndef USE_READLINE
-/*
- *	@todo - use thread-local storage
- */
 static char *readline_buffer[1024];
 
-static char *readline(char const *prompt)
+/*
+ *	Wrapper around readline which does the "right thing" depending
+ *	on whether we're reading from a file or not.  It also ignores
+ *	blank lines and comments, which the main readline() API
+ *	doesn't do.
+ */
+static char *my_readline(char const *prompt, FILE *fp_in, FILE *fp_out)
 {
 	char *line, *p;
 
-	if (prompt && *prompt) puts(prompt);
-	fflush(stdout);
+#ifdef USE_READLINE
+	if (use_readline) return readline(prompt);
+#endif
 
-	line = fgets(readline_buffer, sizeof(readline_buffer), stdin);
+	if (prompt && *prompt) puts(prompt);
+	fflush(fp_out);
+
+	line = fgets((char *) readline_buffer, sizeof(readline_buffer), fp_in);
 	if (!line) return NULL;
 
 	p = strchr(line, '\n');
@@ -449,31 +456,17 @@ static char *readline(char const *prompt)
 		fprintf(stderr, "Input line too long\n");
 		fr_exit_now(EXIT_FAILURE);
 	}
-
 	*p = '\0';
 
-	/*
-	 *	Strip off leading spaces.
-	 */
-	for (p = line; *p != '\0'; p++) {
-		if ((p[0] == ' ') ||
-		    (p[0] == '\t')) {
-			line = p + 1;
-			continue;
-		}
-
-		if (p[0] == '#') {
-			line = NULL;
-			break;
-		}
-
-		break;
-	}
+	fr_skip_whitespace(line);
 
 	/*
 	 *	Comments: keep going.
 	 */
-	if (!line) return line;
+	if (line[0] == '#') {
+		*line = '\0';
+		return line;
+	}
 
 	/*
 	 *	Strip off CR / LF
@@ -489,11 +482,19 @@ static char *readline(char const *prompt)
 	return line;
 }
 
-#define radmin_free(_x)
-#else
-#define radmin_free free
+static void radmin_free(char *line)
+{
+#ifdef USE_READLINE
+	/*
+	 *	Was read from stdin, so "line" == "readline_buffer"
+	 */
+	if (!use_readline) return;
+#endif
 
+	free(line);
+}
 
+#ifdef USE_READLINE
 static ssize_t cmd_copy(char const *cmd)
 {
 	size_t len;
@@ -536,6 +537,15 @@ static int radmin_help(UNUSED int count, UNUSED int key)
 
 	len = cmd_copy(rl_line_buffer);
 	if (len < 0) return 0;
+
+	/*
+	 *	Special-case help for local commands.
+	 */
+	if ((len >= 5) && strncmp(cmd_buffer, "local", 5) == 0) {
+		(void) fr_command_print_help(stdout, local_cmds, cmd_buffer);
+		rl_on_new_line();
+		return 0;
+	}
 
 	if (len > 0) {
 		(void) fr_conduit_write(sockfd, FR_CONDUIT_HELP, cmd_buffer, len);
@@ -586,6 +596,23 @@ radmin_completion(const char *text, int start, UNUSED int end)
 
 	len = cmd_copy(rl_line_buffer);
 	if (len < 0) return NULL;
+
+	/*
+	 *	Handle local commands specially.
+	 */
+	if (strncmp(cmd_buffer, "local", 5) == 0) {
+		int num;
+		char **expansions = &radmin_expansions[0];
+		char const **expansions_const;
+
+		memcpy(&expansions_const, &expansions, sizeof(expansions)); /* const issues */
+		num = fr_command_complete(local_cmds, cmd_buffer, start,
+					  CMD_MAX_EXPANSIONS, expansions_const);
+		if (num <= 0) return NULL;
+
+		radmin_num_expansions = num;
+		return rl_completion_matches(text, radmin_expansion_walk);
+	}
 
 	start += len;
 
@@ -726,6 +753,60 @@ static int check_server(CONF_SECTION *subcs, uid_t uid, gid_t gid, char const **
 	return 1;
 }
 
+static int cmd_test(FILE *fp, UNUSED FILE *fp_err, UNUSED void *ctx, UNUSED fr_cmd_info_t const *info)
+{
+	fprintf(fp, "We're testing stuff!\n");
+
+	return 0;
+}
+
+/*
+ *	Local radmin commands
+ */
+static fr_cmd_table_t cmd_table[] = {
+	{
+		.parent = "local",
+		.name = "test",
+		.func = cmd_test,
+		.help = "Test stuff",
+		.read_only = true
+	},
+
+	CMD_TABLE_END
+};
+
+static fr_cmd_info_t local_info;
+
+static int local_command(char *line)
+{
+	int argc, rcode;
+
+	argc = fr_command_str_to_argv(local_cmds, &local_info, line);
+	if (argc < 0) {
+		fprintf(stderr, "Failed parsing local command: %s\n", fr_strerror());
+		return -1;
+	}
+
+	if (!local_info.runnable) {
+		return 0;
+	}
+
+	rcode = fr_command_run(stderr, stdout, &local_info, false);
+	fflush(stdout);
+	fflush(stderr);
+
+	/*
+	 *	reset "info" to be a top-level context again.
+	 */
+	(void) fr_command_clear(0, &local_info);
+
+	if (rcode < 0) return rcode;
+
+	return 1;
+
+}
+
+
 #define MAX_COMMANDS (4)
 
 int main(int argc, char **argv)
@@ -751,6 +832,9 @@ int main(int argc, char **argv)
 	int num_commands = -1;
 
 	int exit_status = EXIT_SUCCESS;
+
+	char const *prompt = "radmin> ";
+	char prompt_buffer[1024];
 
 #ifndef NDEBUG
 	if (fr_fault_setup(autofree, getenv("PANIC_ACTION"), argv[0]) < 0) {
@@ -968,9 +1052,12 @@ int main(int argc, char **argv)
 	/*
 	 *	Check if stdin is a TTY only if input is from stdin
 	 */
-	if (input_file || !isatty(STDIN_FILENO)) quiet = true;
+	if (input_file || !isatty(STDIN_FILENO)) {
+		use_readline = false;
+		quiet = true;
+	}
 
-	if (!quiet) {
+	if (use_readline) {
 #ifdef USE_READLINE_HISTORY
 		using_history();
 		stifle_history(READLINE_MAX_HISTORY_LINES);
@@ -990,6 +1077,17 @@ int main(int argc, char **argv)
 	signal(SIGPIPE, SIG_IGN);
 
 	if (do_connect(&sockfd, file, server) < 0) exit(EXIT_FAILURE);
+
+	/*
+	 *	Register local commands.
+	 */
+	if (fr_command_add_multi(autofree, &local_cmds, NULL, NULL, cmd_table) < 0) {
+		fprintf(stderr, "%s: Failed registering local commands: %s\n",
+			progname, fr_strerror());
+		goto error;
+	}
+
+	fr_command_info_init(autofree, &local_info);
 
 	/*
 	 *	Run commands from the command-line.
@@ -1041,23 +1139,24 @@ int main(int argc, char **argv)
 		int retries;
 		ssize_t len;
 
-		line = readline(prompt);
+		line = my_readline(prompt, inputfp, stdout);
 
 		if (!line) break;
 
 		if (!*line) goto next;
 
+		/*
+		 *	Radmin supports a number of commands which are
+		 *	valid in any context.
+		 */
 		if (strcmp(line, "reconnect") == 0) {
 			if (do_connect(&sockfd, file, server) < 0) exit(EXIT_FAILURE);
 			goto next;
 		}
 
-		if (strncmp(line, "secret ", 7) == 0) {
-			if (!secret) {
-				secret = line + 7;
-				do_challenge(sockfd);
-			}
-
+		if (!secret && !stack_depth && (strncmp(line, "secret ", 7) == 0)) {
+			secret = line + 7;
+			do_challenge(sockfd);
 			goto next;
 		}
 
@@ -1088,6 +1187,26 @@ int main(int argc, char **argv)
 			goto next;
 		}
 
+		/*
+		 *	Radmin also supports local commands which
+		 *	modifies it's behavior.  These commands MUST
+		 */
+		if (!stack_depth && (strncmp(line, "local", 5) == 0)) {
+			if (!isspace((int) line[5])) {
+				fprintf(stderr, "'local' commands MUST be specified all on one line");
+				goto next;
+			}
+
+			/*
+			 *	Parse and run the local command.
+			 */
+			local_command(line);
+			goto next;
+		}
+
+		/*
+		 *	Any other input is sent to the server.
+		 */
 		retries = 0;
 
 		/*
@@ -1149,7 +1268,7 @@ int main(int argc, char **argv)
 			 *
 			 *	Don't add exit / quit / secret / etc.
 			 */
-			if (!quiet) {
+			if (use_readline) {
 				add_history(cmd_buffer);
 				write_history(history_file);
 			}

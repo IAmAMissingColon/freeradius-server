@@ -19,7 +19,7 @@
  * @file rlm_sql_sqlite.c
  * @brief SQLite driver.
  *
- * @copyright 2013 Network RADIUS SARL (info@networkradius.com)
+ * @copyright 2013 Network RADIUS SARL (legal@networkradius.com)
  * @copyright 2007 Apple Inc.
  */
 RCSID("$Id$")
@@ -719,7 +719,7 @@ static int mod_instantiate(rlm_sql_config_t const *config, void *instance, CONF_
 			MEM(buff = talloc_typed_strdup(cs, inst->filename));
 		}
 
-		ret = rad_mkdir(buff, 0700, -1, -1);
+		ret = fr_file_mkdir(NULL, buff, -1, 0700);
 		talloc_free(buff);
 		if (ret < 0) {
 			ERROR("Failed creating directory for SQLite database: %s", fr_syserror(errno));

@@ -25,12 +25,17 @@
  */
 RCSID("$Id$")
 
-#include <freeradius-devel/server/cond_eval.h>
+#include <freeradius-devel/server/cf_file.h>
+#include <freeradius-devel/server/cond.h>
+#include <freeradius-devel/server/client.h>
+#include <freeradius-devel/server/dependency.h>
 #include <freeradius-devel/server/main_config.h>
 #include <freeradius-devel/server/map_proc.h>
 #include <freeradius-devel/server/modpriv.h>
 #include <freeradius-devel/server/module.h>
 #include <freeradius-devel/server/rad_assert.h>
+#include <freeradius-devel/server/util.h>
+#include <freeradius-devel/server/virtual_servers.h>
 
 #include <freeradius-devel/util/conf.h>
 #include <freeradius-devel/util/dict.h>
@@ -833,10 +838,7 @@ void main_config_name_set_default(main_config_t *config, char const *name, bool 
 void main_config_raddb_dir_set(main_config_t *config, char const *name)
 {
 	if (config->raddb_dir) {
-		char *p;
-
-		memcpy(&p, &config->raddb_dir, sizeof(p));
-		talloc_free(p);
+		talloc_const_free(config->raddb_dir);
 		config->raddb_dir = NULL;
 	}
 	if (name) config->raddb_dir = talloc_typed_strdup(config, name);
@@ -850,10 +852,7 @@ void main_config_raddb_dir_set(main_config_t *config, char const *name)
 void main_config_dict_dir_set(main_config_t *config, char const *name)
 {
 	if (config->dict_dir) {
-		char *p;
-
-		memcpy(&p, &config->dict_dir, sizeof(p));
-		talloc_free(p);
+		talloc_const_free(config->dict_dir);
 		config->dict_dir = NULL;
 	}
 	if (name) config->dict_dir = talloc_typed_strdup(config, name);

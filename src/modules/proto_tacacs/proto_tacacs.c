@@ -18,7 +18,7 @@
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
  * @copyright 2017 The FreeRADIUS server project
- * @copyright 2017 Network RADIUS SARL (info@networkradius.com)
+ * @copyright 2017 Network RADIUS SARL (legal@networkradius.com)
  */
 #include <freeradius-devel/server/base.h>
 #include <freeradius-devel/server/module.h>
@@ -135,7 +135,7 @@ static void tacacs_status(REQUEST * const request, rlm_rcode_t rcode)
 
 		case RLM_MODULE_FAIL:
 		case RLM_MODULE_REJECT:
-		case RLM_MODULE_USERLOCK:
+		case RLM_MODULE_DISALLOW:
 			MEM(pair_update_reply(&vp, attr_tacacs_authentication_status) >= 0);
 			fr_pair_value_from_str(vp, "Fail", -1, '\0', false);
 			break;
@@ -164,7 +164,7 @@ noop:
 
 		case RLM_MODULE_FAIL:
 		case RLM_MODULE_REJECT:
-		case RLM_MODULE_USERLOCK:
+		case RLM_MODULE_DISALLOW:
 			MEM(pair_update_reply(&vp, attr_tacacs_authorization_status) >= 0);
 			fr_pair_value_from_str(vp, "Fail", -1, '\0', false);
 			break;
@@ -188,7 +188,7 @@ noop:
 
 		case RLM_MODULE_FAIL:
 		case RLM_MODULE_REJECT:
-		case RLM_MODULE_USERLOCK:
+		case RLM_MODULE_DISALLOW:
 		case RLM_MODULE_INVALID:
 			MEM(pair_update_reply(&vp, attr_tacacs_accounting_status) >= 0);
 			fr_pair_value_from_str(vp, "Error", -1, '\0', false);
@@ -276,7 +276,7 @@ static void tacacs_running(REQUEST *request, fr_state_signal_t action)
 		/* FALL-THROUGH */
 
 	case REQUEST_RECV:
-		rcode = unlang_interpret_resume(request);
+		rcode = unlang_interpret(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) {
 stop_processing:
@@ -304,7 +304,7 @@ stop_processing:
 		case RLM_MODULE_FAIL:
 		case RLM_MODULE_INVALID:
 		case RLM_MODULE_REJECT:
-		case RLM_MODULE_USERLOCK:
+		case RLM_MODULE_DISALLOW:
 		default:
 			tacacs_status(request, rcode);
 			goto setup_send;
@@ -375,7 +375,7 @@ stop_processing:
 		/* FALL-THROUGH */
 
 	case REQUEST_PROCESS:
-		rcode = unlang_interpret_resume(request);
+		rcode = unlang_interpret(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) goto stop_processing;
 
@@ -396,7 +396,7 @@ stop_processing:
 		case RLM_MODULE_NOTFOUND:
 		case RLM_MODULE_REJECT:
 		case RLM_MODULE_UPDATED:
-		case RLM_MODULE_USERLOCK:
+		case RLM_MODULE_DISALLOW:
 		default:
 			RDEBUG2("Failed to authenticate the user");
 			tacacs_status(request, RLM_MODULE_FAIL);
@@ -425,7 +425,7 @@ setup_send:
 		/* FALL-THROUGH */
 
 	case REQUEST_SEND:
-		rcode = unlang_interpret_resume(request);
+		rcode = unlang_interpret(request);
 
 		if (request->master_state == REQUEST_STOP_PROCESSING) goto stop_processing;
 

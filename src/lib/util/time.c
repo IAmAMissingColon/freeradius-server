@@ -52,6 +52,9 @@ USES_APPLE_DEPRECATED_API
 #include <stdatomic.h>
 
 static _Atomic int64_t			our_realtime;	//!< realtime at the start of the epoch in nanoseconds.
+static char const			*tz_names[2] = { NULL, NULL };	//!< normal, DST, from localtime_r(), tm_zone
+static long				gmtoff[2] = {0, 0};	       	//!< from localtime_r(), tm_gmtoff
+static int				isdst = 0;			//!< from localtime_r(), tm_is_dst
 
 #ifdef HAVE_CLOCK_GETTIME
 static int64_t				our_epoch;
@@ -68,8 +71,11 @@ static uint64_t				our_mach_epoch;
  *	- 0 on success.
  *	- -1 on failure.
  */
-static inline int fr_time_sync(void)
+int fr_time_sync(void)
 {
+	struct tm tm;
+	time_t now;
+
 	/*
 	 *	our_realtime represents system time
 	 *	at the start of our epoch.
@@ -90,9 +96,10 @@ static inline int fr_time_sync(void)
 		if (clock_gettime(CLOCK_REALTIME, &ts_realtime) < 0) return -1;
 		if (clock_gettime(CLOCK_MONOTONIC, &ts_monotime) < 0) return -1;
 
-		our_realtime = fr_time_delta_from_timespec(&ts_realtime) -
-			       (fr_time_delta_from_timespec(&ts_monotime) - our_epoch);
-		return 0;
+		atomic_store_explicit(&our_realtime,
+				      fr_time_delta_from_timespec(&ts_realtime) -
+				      (fr_time_delta_from_timespec(&ts_monotime) - our_epoch),
+				      memory_order_release);
 	}
 #else
 	{
@@ -105,11 +112,25 @@ static inline int fr_time_sync(void)
 		(void) gettimeofday(&tv_realtime, NULL);
 		monotime = mach_absolute_time();
 
-		our_realtime = fr_time_delta_from_timeval(&tv_realtime) -
-			       (monotime - our_mach_epoch) * (timebase.numer / timebase.denom);
-		return 0;
+		atomic_store_explicit(&our_realtime,
+				      fr_time_delta_from_timeval(&tv_realtime) -
+				      (monotime - our_mach_epoch) * (timebase.numer / timebase.denom,
+				      memory_order_release));
 	}
 #endif
+
+	/*
+	 *	Get local time zone name, daylight savings, and GMT
+	 *	offsets.
+	 */
+	now = time(NULL);
+	(void) localtime_r(&now, &tm);
+
+	isdst = (tm.tm_isdst != 0);
+	tz_names[isdst] = tm.tm_zone;
+	gmtoff[isdst] = tm.tm_gmtoff * NSEC; /* they store seconds, we store nanoseconds */
+
+	return 0;
 }
 
 /** Initialize the local time.
@@ -168,15 +189,24 @@ fr_time_t fr_time(void)
  */
 int64_t fr_time_wallclock_at_server_epoch(void)
 {
-	return our_realtime;
+	return atomic_load_explicit(&our_realtime, memory_order_consume);
 }
+
+/** Convert an fr_time_t to our version of unix time (nsec since epoch)
+ *
+ */
+fr_unix_time_t fr_time_to_unix_time(fr_time_t when)
+{
+	return when + atomic_load_explicit(&our_realtime, memory_order_consume);
+}
+
 
 /** Convert an fr_time_t to number of usec since the unix epoch
  *
  */
 int64_t fr_time_to_usec(fr_time_t when)
 {
-	return ((when + our_realtime) / 1000);
+	return ((when + atomic_load_explicit(&our_realtime, memory_order_consume)) / 1000);
 }
 
 /** Convert an fr_time_t to number of msec since the unix epoch
@@ -184,7 +214,7 @@ int64_t fr_time_to_usec(fr_time_t when)
  */
 int64_t fr_time_to_msec(fr_time_t when)
 {
-	return ((when + our_realtime) / 1000000);
+	return ((when + atomic_load_explicit(&our_realtime, memory_order_consume)) / 1000000);
 }
 
 /** Convert an fr_time_t to number of sec since the unix epoch
@@ -192,7 +222,7 @@ int64_t fr_time_to_msec(fr_time_t when)
  */
 int64_t fr_time_to_sec(fr_time_t when)
 {
-	return ((when + our_realtime) / NSEC);
+	return ((when + atomic_load_explicit(&our_realtime, memory_order_consume)) / NSEC);
 }
 
 /** Convert a timeval to a fr_time_t
@@ -205,7 +235,20 @@ int64_t fr_time_to_sec(fr_time_t when)
  */
 fr_time_t fr_time_from_timeval(struct timeval const *when_tv)
 {
-	return fr_time_delta_from_timeval(when_tv) - our_realtime;
+	return fr_time_delta_from_timeval(when_tv) - atomic_load_explicit(&our_realtime, memory_order_consume);
+}
+
+/** Convert a time_t to a fr_time_t
+ *
+ * @param[in] when	The timestamp to convert.
+ * @return
+ *	- >0 number of nanoseconds since the server started.
+ *	- 0 when the server started.
+ *	- <0 number of nanoseconds before the server started.
+ */
+fr_time_t fr_time_from_sec(time_t when)
+{
+	return (((fr_time_t) when) * NSEC) - atomic_load_explicit(&our_realtime, memory_order_consume);
 }
 
 /** Convert a timespec to a fr_time_t
@@ -218,8 +261,47 @@ fr_time_t fr_time_from_timeval(struct timeval const *when_tv)
  */
 fr_time_t fr_time_from_timespec(struct timespec const *when_ts)
 {
-	return fr_time_delta_from_timespec(when_ts) - our_realtime;
+	return fr_time_delta_from_timespec(when_ts) - atomic_load_explicit(&our_realtime, memory_order_consume);
 }
+
+/**  Return time delta from the time zone.
+ *
+ * @param[in] tz	time zone name
+ * @param[out] delta	the time delta
+ * @return
+ *	- 0 converted OK
+ *	- <0 on error
+ *
+ *  Note that this function ONLY handles a limited number of time
+ *  zones: local and gmt.  It is impossible in general to parse
+ *  arbitrary time zone strings, as there are duplicates.
+ *
+ */
+int fr_time_delta_from_time_zone(char const *tz, fr_time_delta_t *delta)
+{
+	*delta = 0;
+
+	if ((strcmp(tz, "UTC") == 0) ||
+	    (strcmp(tz, "GMT") == 0)) {
+		return 0;
+	}
+
+	/*
+	 *	Our local time zone OR time zone with daylight savings.
+	 */
+	if (tz_names[0] && (strcmp(tz, tz_names[0]) == 0)) {
+		*delta = gmtoff[0];
+		return 0;
+	}
+
+	if (tz_names[1] && (strcmp(tz, tz_names[1]) == 0)) {
+		*delta = gmtoff[1];
+		return 0;
+	}
+
+	return -1;
+}
+
 
 /** Create fr_time_delta_t from a string
  *

@@ -26,6 +26,7 @@ RCSID("$Id$")
 #include <freeradius-devel/util/misc.h>
 #include <freeradius-devel/util/strerror.h>
 #include <freeradius-devel/util/syserror.h>
+#include <freeradius-devel/util/talloc.h>
 #include <freeradius-devel/util/time.h>
 
 #include <ctype.h>
@@ -685,25 +686,17 @@ static char *mystrtok(char **ptr, char const *sep)
 {
 	char	*res;
 
-	if (**ptr == 0) {
-		return NULL;
-	}
+	if (**ptr == '\0') return NULL;
 
-	while (**ptr && strchr(sep, **ptr)) {
-		(*ptr)++;
-	}
-	if (**ptr == 0) {
-		return NULL;
-	}
+	while (**ptr && strchr(sep, **ptr)) (*ptr)++;
+
+	if (**ptr == '\0') return NULL;
 
 	res = *ptr;
-	while (**ptr && strchr(sep, **ptr) == NULL) {
-		(*ptr)++;
-	}
+	while (**ptr && strchr(sep, **ptr) == NULL) (*ptr)++;
 
-	if (**ptr != 0) {
-		*(*ptr)++ = 0;
-	}
+	if (**ptr != '\0') *(*ptr)++ = '\0';
+
 	return res;
 }
 
@@ -745,7 +738,7 @@ static int get_part(char **str, int *date, int min, int max, char term, char con
 	return 0;
 }
 
-/** Convert string in various formats to a time_t
+/** Convert string in various formats to a fr_unix_time_t
  *
  * @param date_str input date string.
  * @param date time_t to write result to.
@@ -753,7 +746,7 @@ static int get_part(char **str, int *date, int min, int max, char term, char con
  *	- 0 on success.
  *	- -1 on failure.
  */
-int fr_time_from_str(fr_time_t *date, char const *date_str)
+int fr_unix_time_from_str(fr_unix_time_t *date, char const *date_str)
 {
 	int		i;
 	time_t		t;
@@ -762,6 +755,7 @@ int fr_time_from_str(fr_time_t *date, char const *date_str)
 	char		*p;
 	char		*f[4];
 	char		*tail = NULL;
+	fr_time_delta_t	gmtoff = 0;
 
 	/*
 	 *	Test for unix timestamp, which is just a number and
@@ -769,7 +763,7 @@ int fr_time_from_str(fr_time_t *date, char const *date_str)
 	 */
 	t = strtoul(date_str, &tail, 10);
 	if (*tail == '\0') {
-		*date = fr_time_from_timeval(&(struct timeval) { .tv_sec = t });
+		*date = fr_unix_time_from_timeval(&(struct timeval) { .tv_sec = t });
 		return 0;
 	}
 
@@ -879,7 +873,7 @@ int fr_time_from_str(fr_time_t *date, char const *date_str)
 		 */
 		t += tz;
 
-		*date = fr_time_from_timeval(&(struct timeval) { .tv_sec = t });
+		*date = fr_unix_time_from_timeval(&(struct timeval) { .tv_sec = t });
 		*date += subseconds;
 		return 0;
 	}
@@ -894,6 +888,17 @@ int fr_time_from_str(fr_time_t *date, char const *date_str)
 	if (!f[0] || !f[1] || !f[2]) {
 		fr_strerror_printf("Too few fields");
 		return -1;
+	}
+
+	/*
+	 *	Try to parse the time zone.  If it's GMT / UTC or a
+	 *	local time zone we're OK.
+	 *
+	 *	Otherwise, ignore errors and assume GMT.
+	 */
+	if (*p != '\0') {
+		fr_skip_whitespace(p);
+		(void) fr_time_delta_from_time_zone(p, &gmtoff);
 	}
 
 	/*
@@ -1002,14 +1007,23 @@ int fr_time_from_str(fr_time_t *date, char const *date_str)
 	/*
 	 *  Returns -1 on failure.
 	 */
-	t = mktime(tm);
+	t = timegm(tm);
 	if (t == (time_t) -1) {
 		fr_strerror_printf("Failed calling system function to parse time - %s",
 				   fr_syserror(errno));
 		return -1;
 	}
 
-	*date = fr_time_from_timeval(&(struct timeval) { .tv_sec = t });
+	/*
+	 *	Get the UTC time, and manually add in the offset from GMT.
+	 */
+	*date = fr_unix_time_from_timeval(&(struct timeval) { .tv_sec = t });
+
+	/*
+	 *	Add in the time zone offset, which the posix
+	 *	functions are too stupid to do.
+	 */
+	*date += gmtoff;
 
 	return 0;
 }
@@ -1168,42 +1182,3 @@ int fr_digest_cmp(uint8_t const *a, uint8_t const *b, size_t length)
 	return result;		/* 0 is OK, !0 is !OK, just like memcmp */
 }
 
-/** Create an empty file
- *
- * @param[in] filename path to file.
- * @param[in] mode Specifies the file mode bits be applied.
- * @return
- *	- 0 on success.
- *	- -1 on failure.
- */
-int fr_file_touch(char const *filename, mode_t mode) {
-	int fd;
-
-	fd = open(filename, O_WRONLY | O_CREAT, mode);
-	if (fd < 0) {
-		fr_strerror_printf("Failed creating file \"%s\": %s", filename, fr_syserror(errno));
-		return -1;
-	}
-
-	close(fd);
-
-	return 0;
-}
-
-/** Remove a regular file from the filesystem
- *
- * @param[in] filename path to file.
- * @return
- * 	- -1 On error.
- * 	- 0 if the file was removed.
- * 	- 1 if the file didn't exist.
- */
-int fr_file_unlink(char const *filename) {
-	if (unlink(filename) == 0) return 0;
-
-	if (errno == ENOENT) return 1;
-
-	fr_strerror_printf("Failed removing regular file \"%s\": %s", filename, fr_syserror(errno));
-
-	return -1;
-}

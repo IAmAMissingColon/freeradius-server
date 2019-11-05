@@ -22,16 +22,18 @@
  * @copyright 2018 The FreeRADIUS server project.
  * @copyright 2018 Alan DeKok (aland@deployingradius.com)
  */
-#include <netdb.h>
-#include <freeradius-devel/server/base.h>
-#include <freeradius-devel/server/protocol.h>
-#include <freeradius-devel/util/trie.h>
-#include <freeradius-devel/radius/radius.h>
-#include <freeradius-devel/io/base.h>
 #include <freeradius-devel/io/application.h>
+#include <freeradius-devel/io/base.h>
 #include <freeradius-devel/io/listen.h>
 #include <freeradius-devel/io/schedule.h>
+#include <freeradius-devel/radius/radius.h>
+#include <freeradius-devel/server/base.h>
+#include <freeradius-devel/server/protocol.h>
 #include <freeradius-devel/server/rad_assert.h>
+#include <freeradius-devel/util/fopencookie.h>
+#include <freeradius-devel/util/trie.h>
+#include <netdb.h>
+
 #include "proto_control.h"
 
 #ifdef HAVE_SYS_UN_H
@@ -118,15 +120,9 @@ static fr_table_num_sorted_t mode_names[] = {
 };
 static size_t mode_names_len = NUM_ELEMENTS(mode_names);
 
-
 #undef INT
-#ifdef HAVE_FUNOPEN
-#define INT int
-#define SINT int
-#else
 #define INT size_t
 #define SINT ssize_t
-#endif
 
 static SINT write_stdout(void *instance, char const *buffer, INT buffer_size)
 {
@@ -198,7 +194,6 @@ static ssize_t mod_read_command(fr_listen_t *li, UNUSED void **packet_ctx, UNUSE
 
 		thread->misc_conduit = FR_CONDUIT_COMPLETE;
 
-		fprintf(stderr, "COMPLETE %d %d %s\n", hdr->length - 2, start, string + 2);
 		fr_radmin_complete(thread->misc, string + 2, start);
 		thread->misc_conduit = FR_CONDUIT_STDOUT;
 		status = FR_CONDUIT_SUCCESS;
@@ -1024,9 +1019,7 @@ static int mod_fd_set(fr_listen_t *li, int fd)
 	proto_control_unix_t const     	*inst = talloc_get_type_abort_const(li->app_io_instance, proto_control_unix_t);
 	proto_control_unix_thread_t	*thread = talloc_get_type_abort(li->thread_instance, proto_control_unix_thread_t);
 
-#ifndef HAVE_FUNOPEN
 	cookie_io_functions_t io;
-#endif
 
 	thread->name = NULL;
 
@@ -1082,19 +1075,6 @@ static int mod_fd_set(fr_listen_t *li, int fd)
 	thread->read = mod_read_init;
 
 	/*
-	 *	Set up socket-specific callbacks
-	 */
-#ifdef HAVE_FUNOPEN
-	thread->stdout = funopen(thread, NULL, write_stdout, NULL, NULL);
-	rad_assert(thread->stdout != NULL);
-
-	thread->stderr = funopen(thread, NULL, write_stderr, NULL, NULL);
-	rad_assert(thread->stderr != NULL);
-
-	thread->misc = funopen(thread, NULL, write_misc, NULL, NULL);
-	rad_assert(thread->misc != NULL);
-#else
-	/*
 	 *	These must be set separately as they have different prototypes.
 	 */
 	io.read = NULL;
@@ -1109,7 +1089,6 @@ static int mod_fd_set(fr_listen_t *li, int fd)
 
 	io.write = write_misc;
 	thread->misc = fopencookie(thread, "w", io);
-#endif
 
 	talloc_set_destructor(thread, _close_cookies);
 

@@ -24,6 +24,7 @@
  */
 RCSID("$Id$")
 
+#include <freeradius-devel/server/request_data.h>
 #include "unlang_priv.h"
 #include "return_priv.h"
 
@@ -72,8 +73,7 @@ static int _free_unlang_frame_state_foreach(unlang_frame_state_foreach_t *state)
 	return 0;
 }
 
-static unlang_action_t unlang_foreach(REQUEST *request,
-				      rlm_rcode_t *presult, int *priority)
+static unlang_action_t unlang_foreach_next(REQUEST *request, rlm_rcode_t *presult)
 {
 	VALUE_PAIR			*vp;
 	unlang_stack_t			*stack = request->stack;
@@ -84,75 +84,17 @@ static unlang_action_t unlang_foreach(REQUEST *request,
 
 	g = unlang_generic_to_group(instruction);
 
-	if (!is_repeatable(frame)) {
-		int i, foreach_depth = 0;
-		VALUE_PAIR *vps;
+	foreach = talloc_get_type_abort(frame->state, unlang_frame_state_foreach_t);
 
-		/*
-		 *	Ensure any breaks terminate here...
-		 */
-		break_point_set(frame);
-
-		if (stack->depth >= UNLANG_STACK_MAX) {
-			ERROR("Internal sanity check failed: module stack is too deep");
-			fr_exit(EXIT_FAILURE);
-		}
-
-		/*
-		 *	Figure out foreach depth by walking back up the stack
-		 */
-		if (stack->depth > 0) for (i = (stack->depth - 1); i >= 0; i--) {
-			unlang_t *our_instruction;
-			our_instruction = stack->frame[i].instruction;
-			if (!our_instruction || (our_instruction->type != UNLANG_TYPE_FOREACH)) continue;
-			foreach_depth++;
-		}
-
-		if (foreach_depth >= (int)NUM_ELEMENTS(xlat_foreach_names)) {
-			REDEBUG("foreach Nesting too deep!");
-			*presult = RLM_MODULE_FAIL;
-			*priority = 0;
-			return UNLANG_ACTION_CALCULATE_RESULT;
-		}
-
-		MEM(frame->state = foreach = talloc_zero(stack, unlang_frame_state_foreach_t));
-
-		/*
-		 *	Copy the VPs from the original request, this ensures deterministic
-		 *	behaviour if someone decides to add or remove VPs in the set we're
-		 *	iterating over.
-		 */
-		if (tmpl_copy_vps(frame->state, &vps, request, g->vpt) < 0) {	/* nothing to loop over */
-			*presult = RLM_MODULE_NOOP;
-			*priority = instruction->actions[RLM_MODULE_NOOP];
-			return UNLANG_ACTION_CALCULATE_RESULT;
-		}
-
-		rad_assert(vps != NULL);
-
-		foreach->request = request;
-		foreach->depth = foreach_depth;
-		foreach->vps = vps;
-		fr_cursor_talloc_init(&foreach->cursor, &foreach->vps, VALUE_PAIR);
+	vp = fr_cursor_current(&foreach->cursor);
+	if (!vp) {
+		*presult = frame->result;
 #ifndef NDEBUG
-		foreach->indent = request->log.unlang_indent;
+		rad_assert(foreach->indent == request->log.unlang_indent);
 #endif
-		talloc_set_destructor(foreach, _free_unlang_frame_state_foreach);
-
-		vp = fr_cursor_head(&foreach->cursor);
-	} else {
-		foreach = talloc_get_type_abort(frame->state, unlang_frame_state_foreach_t);
-
-		vp = fr_cursor_next(&foreach->cursor);
-		if (!vp) {
-			*presult = frame->result;
-			if (*presult != RLM_MODULE_UNKNOWN) *priority = instruction->actions[*presult];
-#ifndef NDEBUG
-			rad_assert(foreach->indent == request->log.unlang_indent);
-#endif
-			return UNLANG_ACTION_CALCULATE_RESULT;
-		}
+		return UNLANG_ACTION_CALCULATE_RESULT;
 	}
+	(void) fr_cursor_next(&foreach->cursor);
 
 #ifndef NDEBUG
 	RDEBUG2("# looping with: Foreach-Variable-%d = %pV", foreach->depth, &vp->data);
@@ -177,7 +119,73 @@ static unlang_action_t unlang_foreach(REQUEST *request,
 	return UNLANG_ACTION_PUSHED_CHILD;
 }
 
-static unlang_action_t unlang_break(REQUEST *request, rlm_rcode_t *presult, int *priority)
+
+static unlang_action_t unlang_foreach(REQUEST *request, rlm_rcode_t *presult)
+{
+	unlang_stack_t			*stack = request->stack;
+	unlang_stack_frame_t		*frame = &stack->frame[stack->depth];
+	unlang_t			*instruction = frame->instruction;
+	unlang_frame_state_foreach_t	*foreach = NULL;
+	unlang_group_t			*g;
+	int				i, foreach_depth = 0;
+	VALUE_PAIR			*vps;
+
+	g = unlang_generic_to_group(instruction);
+
+	/*
+	 *	Ensure any breaks terminate here...
+	 */
+	break_point_set(frame);
+
+	if (stack->depth >= UNLANG_STACK_MAX) {
+		ERROR("Internal sanity check failed: module stack is too deep");
+		fr_exit(EXIT_FAILURE);
+	}
+
+	/*
+	 *	Figure out foreach depth by walking back up the stack
+	 */
+	if (stack->depth > 0) for (i = (stack->depth - 1); i >= 0; i--) {
+			unlang_t *our_instruction;
+			our_instruction = stack->frame[i].instruction;
+			if (!our_instruction || (our_instruction->type != UNLANG_TYPE_FOREACH)) continue;
+			foreach_depth++;
+		}
+
+	if (foreach_depth >= (int)NUM_ELEMENTS(xlat_foreach_names)) {
+		REDEBUG("foreach Nesting too deep!");
+		*presult = RLM_MODULE_FAIL;
+		return UNLANG_ACTION_CALCULATE_RESULT;
+	}
+
+	MEM(frame->state = foreach = talloc_zero(stack, unlang_frame_state_foreach_t));
+
+	/*
+	 *	Copy the VPs from the original request, this ensures deterministic
+	 *	behaviour if someone decides to add or remove VPs in the set we're
+	 *	iterating over.
+	 */
+	if (tmpl_copy_vps(frame->state, &vps, request, g->vpt) < 0) {	/* nothing to loop over */
+		*presult = RLM_MODULE_NOOP;
+		return UNLANG_ACTION_CALCULATE_RESULT;
+	}
+
+	rad_assert(vps != NULL);
+
+	foreach->request = request;
+	foreach->depth = foreach_depth;
+	foreach->vps = vps;
+	fr_cursor_talloc_init(&foreach->cursor, &foreach->vps, VALUE_PAIR);
+#ifndef NDEBUG
+	foreach->indent = request->log.unlang_indent;
+#endif
+	talloc_set_destructor(foreach, _free_unlang_frame_state_foreach);
+
+	frame->interpret = unlang_foreach_next;
+	return unlang_foreach_next(request, presult);
+}
+
+static unlang_action_t unlang_break(REQUEST *request, rlm_rcode_t *presult)
 {
 	unlang_stack_t		*stack = request->stack;
 	unlang_stack_frame_t	*frame = &stack->frame[stack->depth];
@@ -186,7 +194,6 @@ static unlang_action_t unlang_break(REQUEST *request, rlm_rcode_t *presult, int 
 	RDEBUG2("%s", unlang_ops[instruction->type].name);
 
 	*presult = frame->result;
-	*priority = frame->priority;
 
 	/*
 	 *	Stop at the next break point, or if we hit
@@ -223,14 +230,14 @@ void unlang_foreach_init(void)
 	unlang_register(UNLANG_TYPE_FOREACH,
 			   &(unlang_op_t){
 				.name = "foreach",
-				.func = unlang_foreach,
+				.interpret = unlang_foreach,
 				.debug_braces = true
 			   });
 
 	unlang_register(UNLANG_TYPE_BREAK,
 			   &(unlang_op_t){
 				.name = "break",
-				.func = unlang_break,
+				.interpret = unlang_break,
 			   });
 }
 

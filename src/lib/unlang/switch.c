@@ -24,11 +24,11 @@
  */
 RCSID("$Id$")
 
+#include <freeradius-devel/server/cond.h>
 #include "unlang_priv.h"
 #include "group_priv.h"
 
-static unlang_action_t unlang_switch(REQUEST *request,
-				       UNUSED rlm_rcode_t *presult, UNUSED int *priority)
+static unlang_action_t unlang_switch(REQUEST *request, UNUSED rlm_rcode_t *presult)
 {
 	unlang_stack_t		*stack = request->stack;
 	unlang_stack_frame_t	*frame = &stack->frame[stack->depth];
@@ -171,8 +171,7 @@ do_null_case:
 }
 
 
-static unlang_action_t unlang_case(REQUEST *request,
-				   rlm_rcode_t *presult, int *priority)
+static unlang_action_t unlang_case(REQUEST *request, rlm_rcode_t *presult)
 {
 	unlang_stack_t		*stack = request->stack;
 	unlang_stack_frame_t	*frame = &stack->frame[stack->depth];
@@ -183,11 +182,10 @@ static unlang_action_t unlang_case(REQUEST *request,
 
 	if (!g->children) {
 		*presult = RLM_MODULE_NOOP;
-		*priority = 0;
 		return UNLANG_ACTION_CALCULATE_RESULT;
 	}
 
-	return unlang_group(request, presult, priority);
+	return unlang_group(request, presult);
 }
 
 void unlang_switch_init(void)
@@ -195,14 +193,14 @@ void unlang_switch_init(void)
 	unlang_register(UNLANG_TYPE_SWITCH,
 			   &(unlang_op_t){
 				.name = "switch",
-				.func = unlang_switch,
+				.interpret = unlang_switch,
 				.debug_braces = true
 			   });
 
 	unlang_register(UNLANG_TYPE_CASE,
 			   &(unlang_op_t){
 				.name = "case",
-				.func = unlang_case,
+				.interpret = unlang_case,
 				.debug_braces = true
 			   });
 }

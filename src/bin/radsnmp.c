@@ -21,7 +21,7 @@
  * @file src/bin/radsnmp.c
  *
  * @copyright 2015-2016 The FreeRADIUS server project
- * @copyright 2015-2016 Network RADIUS SARL (info@networkradius.com)
+ * @copyright 2015-2016 Network RADIUS SARL (legal@networkradius.com)
  *
  * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  */
@@ -306,11 +306,7 @@ static ssize_t radsnmp_pair_from_oid(TALLOC_CTX *ctx, radsnmp_conf_t *conf, fr_c
 		da = parent;
 	}
 
-	vp = fr_pair_afrom_da(ctx, da);
-	if (!vp) {
-		fr_strerror_printf("Failed allocating OID attribute");
-		return -(slen);
-	}
+	MEM(vp = fr_pair_afrom_da(ctx, da));
 
 	/*
 	 *	VALUE_PAIRs with no value need a 1 byte value buffer.
@@ -358,11 +354,7 @@ static ssize_t radsnmp_pair_from_oid(TALLOC_CTX *ctx, radsnmp_conf_t *conf, fr_c
 		goto error;
 	}
 
-	vp = fr_pair_afrom_da(ctx, attr_freeradius_snmp_type);
-	if (!vp) {
-		slen = -(slen);
-		goto error;
-	}
+	MEM(vp = fr_pair_afrom_da(ctx, attr_freeradius_snmp_type));
 	vp->vp_uint32 = type;
 
 	fr_cursor_append(cursor, vp);
@@ -460,7 +452,7 @@ static int radsnmp_get_response(int fd,
 			 *	Print OID from last index/root up to the parent of
 			 *	the index attribute.
 			 */
-			slen = fr_dict_print_attr_oid(p, end - p, parent, vp->da->parent);
+			slen = fr_dict_print_attr_oid(NULL, p, end - p, parent, vp->da->parent);
 			if (slen < 0) return -1;
 
 			if (vp->vp_type != FR_TYPE_UINT32) {
@@ -491,7 +483,7 @@ static int radsnmp_get_response(int fd,
 		/*
 		 *	Actual TLV attribute
 		 */
-		slen = fr_dict_print_attr_oid(p, end - p, parent, vp->da);
+		slen = fr_dict_print_attr_oid(NULL, p, end - p, parent, vp->da);
 		if (slen < 0) return -1;
 
 		/*
@@ -752,11 +744,7 @@ static int radsnmp_send_recv(radsnmp_conf_t *conf, int fd)
 		 *	Now add an attribute indicating what the
 		 *	SNMP operation was
 		 */
-		vp = fr_pair_afrom_da(request, attr_freeradius_snmp_operation);
-		if (!vp) {
-			ERROR("Failed allocating SNMP operation attribute");
-			return EXIT_FAILURE;
-		}
+		MEM(vp = fr_pair_afrom_da(request, attr_freeradius_snmp_operation));
 		vp->vp_uint32 = (unsigned int)command;	/* Commands must match dictionary */
 		fr_cursor_append(&cursor, vp);
 
@@ -792,11 +780,7 @@ static int radsnmp_send_recv(radsnmp_conf_t *conf, int fd)
 			/*
 			 *	Print the attributes we're about to send
 			 */
-			fr_packet_header_log(&default_log, request, false);
-			if (fr_debug_lvl >= L_DBG_LVL_1) fr_pair_list_log(&default_log, request->vps);
-#ifndef NDEBUG
-			if (fr_debug_lvl >= L_DBG_LVL_4) fr_radius_packet_log_hex(&default_log, request);
-#endif
+			fr_packet_log(&default_log, request, false);
 
 			FD_ZERO(&set); /* clear the set */
 			FD_SET(fd, &set);
@@ -855,11 +839,7 @@ static int radsnmp_send_recv(radsnmp_conf_t *conf, int fd)
 			/*
 			 *	Print the attributes we received in response
 			 */
-			fr_packet_header_log(&default_log, reply, true);
-			if (fr_debug_lvl >= L_DBG_LVL_1) fr_pair_list_log(&default_log, reply->vps);
-#ifndef NDEBUG
-			if (fr_debug_lvl >= L_DBG_LVL_4) fr_radius_packet_log_hex(&default_log, reply);
-#endif
+			fr_packet_log(&default_log, reply, true);
 
 			switch (command) {
 			case RADSNMP_GET:

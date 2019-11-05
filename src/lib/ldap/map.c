@@ -20,15 +20,12 @@
  * @brief Functions for mapping between LDAP and FreeRADIUS attributes.
  *
  * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
- * @copyright 2013 Network RADIUS SARL (info@networkradius.com)
+ * @copyright 2013 Network RADIUS SARL (legal@networkradius.com)
  * @copyright 2013 The FreeRADIUS Server Project.
  */
 RCSID("$Id$")
 
 USES_APPLE_DEPRECATED_API
-
-#define LOG_PREFIX "%s - "
-#define LOG_PREFIX_ARGS handle_config->name
 
 #include <freeradius-devel/server/rad_assert.h>
 #include <freeradius-devel/ldap/base.h>
@@ -153,8 +150,7 @@ int fr_ldap_map_getvalue(TALLOC_CTX *ctx, VALUE_PAIR **out, REQUEST *request, vp
 		for (i = 0; i < self->count; i++) {
 			if (!self->values[i]->bv_len) continue;
 
-			vp = fr_pair_afrom_da(ctx, map->lhs->tmpl_da);
-			rad_assert(vp);
+			MEM(vp = fr_pair_afrom_da(ctx, map->lhs->tmpl_da));
 
 			if (fr_pair_value_from_str(vp, self->values[i]->bv_val,
 						   self->values[i]->bv_len, '\0', true) < 0) {

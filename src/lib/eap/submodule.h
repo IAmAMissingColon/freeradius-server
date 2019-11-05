@@ -1,6 +1,6 @@
 #pragma once
 /*
- *   This program is is free software; you can redistribute it and/or modify
+ *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
  *   the Free Software Foundation; either version 2 of the License, or (at
  *   your option) any later version.
@@ -43,6 +43,8 @@ typedef struct {
 							//!< #eap_session_t.
 
 	fr_dict_t		**namespace;		//!< Namespace children should be allocated in.
+
+	bool			clone_parent_lists;	//!< HACK until all eap methods run their own sections.
 } rlm_eap_submodule_t;
 
 /** Private structure to hold handles and interfaces for an EAP method

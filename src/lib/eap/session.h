@@ -1,6 +1,6 @@
 #pragma once
 /*
- *   This program is is free software; you can redistribute it and/or modify
+ *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
  *   the Free Software Foundation; either version 2 of the License, or (at
  *   your option) any later version.
@@ -23,6 +23,7 @@
  * @copyright 2019 The FreeRADIUS server project
  */
 #include <freeradius-devel/server/request.h>
+#include <freeradius-devel/server/request_data.h>
 #include <freeradius-devel/server/module.h>
 
 #include "compose.h"
@@ -41,6 +42,9 @@ struct eap_session_s {
 
 	eap_session_t	*child;				//!< Session for tunneled EAP method.
 
+	REQUEST		*subrequest;			//!< Current subrequest being executed.
+	rlm_rcode_t	submodule_rcode;		//!< Result of last submodule call.
+
 	void const	*inst;				//!< Instance of the eap module this session was created by.
 	eap_type_t	type;				//!< EAP method number.
 
@@ -57,13 +61,11 @@ struct eap_session_s {
 
 	void 		*opaque;			//!< Opaque data used by EAP methods.
 
-	rlm_rcode_t	submodule_rcode;		//!< Result of last submodule call.
-
 	module_method_t	process;			//!< Callback that should be used to process the next round.
 							///< Usually set to the process function of an EAP submodule.
 	int		rounds;				//!< How many roundtrips have occurred this session.
 
-	time_t		updated;			//!< The last time we received a packet for this EAP session.
+	fr_time_t	updated;			//!< The last time we received a packet for this EAP session.
 
 	bool		tls;				//!< Whether EAP method uses TLS.
 	bool		finished;			//!< Whether we consider this session complete.

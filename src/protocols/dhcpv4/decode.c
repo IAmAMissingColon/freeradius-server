@@ -111,7 +111,7 @@ static ssize_t decode_value_internal(TALLOC_CTX *ctx, fr_cursor_t *cursor, fr_di
 	if (vp->da->type == FR_TYPE_STRING) {
 		uint8_t const *q, *end;
 
-		q = end = data + data_len;
+		end = data + data_len;
 
 		/*
 		 *	Not allowed to be an array, copy the whole value
@@ -123,7 +123,7 @@ static ssize_t decode_value_internal(TALLOC_CTX *ctx, fr_cursor_t *cursor, fr_di
 		}
 
 		for (;;) {
-			q = memchr(p, '\0', q - p);
+			q = memchr(p, '\0', end - p);
 
 			/* Malformed but recoverable */
 			if (!q) q = end;
@@ -267,9 +267,10 @@ static ssize_t decode_tlv(TALLOC_CTX *ctx, fr_cursor_t *cursor, fr_dict_attr_t c
 			return -1;
 		}
 
-		if (p[1] > (end - p)) {
-			fr_strerror_printf("%s: Suboption would overflow option.  Remaining option data %zu byte(s) "
-					   "(from %zu), Suboption length %u", __FUNCTION__, (end - p), data_len, p[1]);
+		if ((p[1] + 2) > (end - p)) {
+			fr_strerror_printf("%s: Suboption %02x would overflow option.  Remaining option data %zu byte(s) "
+					   "(from %zu), Suboption length %u",
+					   __FUNCTION__, p[0], (end - p), data_len, p[1]);
 			return -1;
 		}
 
@@ -396,7 +397,7 @@ ssize_t fr_dhcpv4_decode_option(TALLOC_CTX *ctx, fr_cursor_t *cursor,
 	/*
 	 *	Everything else should be real options
 	 */
-	if ((data_len < 2) || (data[1] > data_len)) {
+	if ((data_len < 2) || ((size_t) (data[1] + 2) > data_len)) {
 		fr_strerror_printf("%s: Insufficient data", __FUNCTION__);
 		return -1;
 	}
@@ -445,11 +446,37 @@ static int decode_test_ctx(void **out, TALLOC_CTX *ctx)
 	return 0;
 }
 
+
+static ssize_t fr_dhcpv4_decode_proto(UNUSED void *proto_ctx, uint8_t const *data, size_t data_len)
+{
+	ssize_t rcode;
+//	fr_dhcpv4_ctx_t	*test_ctx = talloc_get_type_abort(proto_ctx, fr_dhcpv4_ctx_t);
+	RADIUS_PACKET *packet;
+
+	if (!fr_dhcpv4_ok(data, data_len, NULL, NULL)) return -1;
+
+	packet = fr_dhcpv4_packet_alloc(data, data_len);
+	if (!packet) return -1;
+
+	memcpy(&packet->data, &data, sizeof(packet->data)); /* const issues */
+	packet->data_len = data_len;
+	rcode = fr_dhcpv4_packet_decode(packet);
+	talloc_free(packet);
+
+	return rcode;
+}
+
 /*
  *	Test points
  */
-extern fr_test_point_pair_decode_t dhcpv4_tp_decode;
-fr_test_point_pair_decode_t dhcpv4_tp_decode = {
+extern fr_test_point_pair_decode_t dhcpv4_tp_decode_pair;
+fr_test_point_pair_decode_t dhcpv4_tp_decode_pair = {
 	.test_ctx	= decode_test_ctx,
 	.func		= fr_dhcpv4_decode_option
+};
+
+extern fr_test_point_proto_decode_t dhcpv4_tp_decode_proto;
+fr_test_point_proto_decode_t dhcpv4_tp_decode_proto = {
+	.test_ctx	= decode_test_ctx,
+	.func		= fr_dhcpv4_decode_proto
 };

@@ -17,7 +17,7 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2012 Network RADIUS SARL (info@networkradius.com)
+ * @copyright 2012 Network RADIUS SARL (legal@networkradius.com)
  */
 
 #include <freeradius-devel/server/base.h>
@@ -480,7 +480,6 @@ static bfd_state_t *bfd_new_session(bfd_socket_t *sock, int sockfd,
 {
 	int rcode;
 	bool flag;
-	uint32_t number;
 	bfd_state_t *session;
 
 	session = talloc_zero(sock, bfd_state_t);
@@ -515,28 +514,46 @@ static bfd_state_t *bfd_new_session(bfd_socket_t *sock, int sockfd,
 		session->demand_mode = flag;
 	}
 
-	rcode = cf_pair_parse(NULL, cs, "min_transmit_interval", FR_ITEM_POINTER(FR_TYPE_UINT32, &number), NULL, T_INVALID);
-	if (rcode == 0) {
-		if (number < 100) number = 100;
-		if (number > 10000) number = 10000;
+	/*
+	 *	Number is moved out of scope to shut up lgtm
+	 *      static analysis, but really these should be
+	 *	moved into conf_parser callback functions.
+	 */
+	{
+		uint32_t number;
 
-		session->desired_min_tx_interval = number * 1000;
-	}
-	rcode = cf_pair_parse(NULL, cs, "min_receive_interval", FR_ITEM_POINTER(FR_TYPE_UINT32, &number), NULL, T_INVALID);
-	if (rcode == 0) {
-		if (number < 100) number = 100;
-		if (number > 10000) number = 10000;
+		rcode = cf_pair_parse(NULL, cs, "min_transmit_interval", FR_ITEM_POINTER(FR_TYPE_UINT32, &number), NULL, T_INVALID);
+		if (rcode == 0) {
+			if (number < 100) number = 100;
+			if (number > 10000) number = 10000;
 
-		session->required_min_rx_interval = number * 1000;
-	}
-	rcode = cf_pair_parse(NULL, cs, "max_timeouts", FR_ITEM_POINTER(FR_TYPE_UINT32, &number), NULL, T_INVALID);
-	if (rcode == 0) {
-		if (number == 0) number = 1;
-		if (number > 10) number = 10;
-
-		session->detect_multi = number;
+			session->desired_min_tx_interval = number * 1000;
+		}
 	}
 
+	{
+		uint32_t number;
+
+		rcode = cf_pair_parse(NULL, cs, "min_receive_interval", FR_ITEM_POINTER(FR_TYPE_UINT32, &number), NULL, T_INVALID);
+		if (rcode == 0) {
+			if (number < 100) number = 100;
+			if (number > 10000) number = 10000;
+
+			session->required_min_rx_interval = number * 1000;
+		}
+	}
+
+	{
+		uint32_t number;
+
+		rcode = cf_pair_parse(NULL, cs, "max_timeouts", FR_ITEM_POINTER(FR_TYPE_UINT32, &number), NULL, T_INVALID);
+		if (rcode == 0) {
+			if (number == 0) number = 1;
+			if (number > 10) number = 10;
+
+			session->detect_multi = number;
+		}
+	}
 	session->auth_type = sock->auth_type;
 
 	/*
@@ -1362,7 +1379,7 @@ static int bfd_process(bfd_state_t *session, bfd_packet_t *bfd)
 		request->module = NULL;
 
 		DEBUG2("server %s {", cf_section_name2(request->server_cs));
-		unlang_interpret(request, session->unlang, RLM_MODULE_NOTFOUND);
+		unlang_interpret_section(request, session->unlang, RLM_MODULE_NOTFOUND);
 		DEBUG("}");
 
 		/*

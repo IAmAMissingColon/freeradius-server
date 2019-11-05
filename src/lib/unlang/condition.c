@@ -27,8 +27,7 @@ RCSID("$Id$")
 #include "unlang_priv.h"
 #include "group_priv.h"
 
-static unlang_action_t unlang_if(REQUEST *request,
-				 rlm_rcode_t *presult, int *priority)
+static unlang_action_t unlang_if(REQUEST *request, rlm_rcode_t *presult)
 {
 	int			condition;
 	unlang_stack_t		*stack = request->stack;
@@ -60,9 +59,6 @@ static unlang_action_t unlang_if(REQUEST *request,
 	 */
 	if (!condition) {
 		RDEBUG2("...");
-
-		if (*presult != RLM_MODULE_UNKNOWN) *priority = instruction->actions[*presult];
-
 		return UNLANG_ACTION_EXECUTE_NEXT;
 	}
 
@@ -79,7 +75,7 @@ static unlang_action_t unlang_if(REQUEST *request,
 	/*
 	 *	We took the "if".  Go recurse into its' children.
 	 */
-	return unlang_group(request, presult, priority);
+	return unlang_group(request, presult);
 }
 
 void unlang_condition_init(void)
@@ -87,21 +83,21 @@ void unlang_condition_init(void)
 	unlang_register(UNLANG_TYPE_IF,
 			   &(unlang_op_t){
 				.name = "if",
-				.func = unlang_if,
+				.interpret = unlang_if,
 				.debug_braces = true
 			   });
 
 	unlang_register(UNLANG_TYPE_ELSE,
 			   &(unlang_op_t){
 				.name = "else",
-				.func = unlang_group,
+				.interpret = unlang_group,
 				.debug_braces = true
 			   });
 
 	unlang_register(UNLANG_TYPE_ELSIF,
 			   &(unlang_op_t){
 				.name = "elseif",
-				.func = unlang_if,
+				.interpret = unlang_if,
 				.debug_braces = true
 			   });
 }

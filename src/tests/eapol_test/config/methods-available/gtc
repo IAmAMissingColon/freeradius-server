@@ -1,4 +1,0 @@
-type = gtc
-gtc {
-	auth_type = pap
-}

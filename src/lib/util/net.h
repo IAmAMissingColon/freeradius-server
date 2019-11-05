@@ -163,6 +163,38 @@ uint16_t	fr_udp_checksum(uint8_t const *data, uint16_t len, uint16_t checksum,
 int		fr_udp_header_check(uint8_t const *data, uint16_t remaining, ip_header_t const *ip);
 uint16_t	fr_ip_header_checksum(uint8_t const *data, uint8_t ihl);
 
+static inline void fr_put_be16(uint8_t a[static sizeof(uint16_t)], uint16_t val)
+{
+	a[0] = (val >> 8) & 0xff;
+	a[1] = val & 0xff;
+}
+
+static inline void fr_put_be32(uint8_t a[static sizeof(uint32_t)], uint32_t val)
+{
+	fr_put_be16(a, (uint16_t) (val >> 16));
+	fr_put_be16(a + sizeof(uint16_t), (uint16_t) val);
+}
+
+static inline void fr_put_be64(uint8_t a[static sizeof(uint64_t)], uint64_t val)
+{
+	fr_put_be32(a, (uint32_t) (val >> 32));
+	fr_put_be32(a + sizeof(uint32_t), (uint32_t) val);
+}
+
+static inline uint16_t fr_get_be16(uint8_t const a[static sizeof(uint16_t)])
+{
+	return (((uint16_t) a[0]) << 8) | a[1];
+}
+
+static inline uint32_t fr_get_be32(uint8_t const a[static sizeof(uint32_t)])
+{
+	return ((uint32_t) fr_get_be16(a) << 16) | fr_get_be16(a + sizeof(uint16_t));
+}
+
+static inline uint64_t fr_get_be64(uint8_t const a[static sizeof(uint64_t)])
+{
+	return ((uint64_t) fr_get_be32(a) << 32) | fr_get_be32(a + sizeof(uint32_t));
+}
 #ifdef __cplusplus
 }
 #endif

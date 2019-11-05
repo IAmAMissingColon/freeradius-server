@@ -1,6 +1,6 @@
 # The FreeRADIUS server
 
-[![Travis CI build status][BuildStatus]][BuildStatusLink] [![Coverity Status][CoverityStatus]][CoverityStatusLink]
+[![Travis CI build status][BuildStatus]][BuildStatusLink] [![Coverity Status][CoverityStatus]][CoverityStatusLink] [![LGTM Status][LGTMStatus]][LGTMStatusLink]
 
 ## Introduction
 
@@ -29,7 +29,7 @@ for additional documentation.
 ## Installation
 
 To install the server, please see the [installation
-instructions](doc/howto/INSTALL.adoc) document.
+instructions](doc/antora/modules/installation/pages/index.adoc) document.
 
 ## Configuring the server
 
@@ -109,7 +109,8 @@ mailing lists first to determine whether it really is a defect or
 missing feature.
 
 Instructions for gathering data for defect reports can be found in
-`doc/developers/bugs.adoc` or on the [wiki](https://wiki.freeradius.org/project/bug-reports).
+[here](doc/antora/modules/developers/pages/bugs.adoc) or on the 
+[wiki](https://wiki.freeradius.org/project/bug-reports).
 
 Under no circumstances should the issue tracker be used for support
 requests, those questions belong on the user's mailing list.  If you
@@ -140,3 +141,5 @@ are available from [Network RADIUS](https://networkradius.com).
 [CoverityStatusLink]: https://scan.coverity.com/projects/58
 [BuildStatus]: https://travis-ci.org/FreeRADIUS/freeradius-server.png?branch=master "Travis CI status"
 [BuildStatusLink]: https://travis-ci.org/FreeRADIUS/freeradius-server
+[LGTMStatus]: https://img.shields.io/lgtm/alerts/g/FreeRADIUS/freeradius-server.svg?logo=lgtm&logoWidth=18
+[LGTMStatusLink]: https://lgtm.com/projects/g/FreeRADIUS/freeradius-server/alerts/

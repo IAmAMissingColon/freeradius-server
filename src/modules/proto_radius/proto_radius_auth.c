@@ -23,15 +23,23 @@
  * @copyright 2016 Alan DeKok (aland@deployingradius.com)
  */
 #include <freeradius-devel/io/application.h>
-#include <freeradius-devel/server/protocol.h>
-#include <freeradius-devel/server/module.h>
-#include <freeradius-devel/unlang/base.h>
-#include <freeradius-devel/util/dict.h>
-#include <freeradius-devel/util/time.h>
-#include <freeradius-devel/server/state.h>
-#include <freeradius-devel/server/rad_assert.h>
 
 #include <freeradius-devel/protocol/freeradius/freeradius.internal.h>
+
+#include <freeradius-devel/radius/radius.h>
+
+#include <freeradius-devel/server/module.h>
+#include <freeradius-devel/server/pair.h>
+#include <freeradius-devel/server/protocol.h>
+#include <freeradius-devel/server/rad_assert.h>
+#include <freeradius-devel/server/state.h>
+
+#include <freeradius-devel/unlang/base.h>
+
+#include <freeradius-devel/util/dict.h>
+#include <freeradius-devel/util/print.h>
+#include <freeradius-devel/util/rand.h>
+#include <freeradius-devel/util/time.h>
 
 typedef struct {
 	bool		log_stripped_names;
@@ -52,6 +60,13 @@ typedef struct {
 							//!< captures.
 
 	fr_state_tree_t	*state_tree;			//!< State tree to link multiple requests/responses.
+
+	CONF_SECTION	*recv_access_request;
+	CONF_SECTION	*send_access_accept;
+	CONF_SECTION	*send_access_reject;
+	CONF_SECTION	*send_access_challenge;
+	CONF_SECTION	*send_do_not_respond;
+	CONF_SECTION	*send_protocol_error;
 } proto_radius_auth_t;
 
 static const CONF_PARSER session_config[] = {
@@ -243,7 +258,7 @@ static void CC_HINT(format (printf, 4, 5)) auth_message(proto_radius_auth_t cons
 	talloc_free(msg);
 }
 
-static fr_io_final_t mod_process(void const *instance, REQUEST *request)
+static rlm_rcode_t mod_process(void const *instance, REQUEST *request)
 {
 	proto_radius_auth_t const	*inst = instance;
 	VALUE_PAIR			*vp, *auth_type;
@@ -263,7 +278,7 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request)
 
 		request->component = "radius";
 
-		unlang = cf_section_find(request->server_cs, "recv", "Access-Request");
+		unlang = inst->recv_access_request;
 		if (!unlang) {
 			REDEBUG("Failed to find 'recv Access-Request' section");
 			request->reply->code = FR_CODE_ACCESS_REJECT;
@@ -285,11 +300,11 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request)
 		/* FALL-THROUGH */
 
 	case REQUEST_RECV:
-		rcode = unlang_interpret_resume(request);
+		rcode = unlang_interpret(request);
 
-		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
+		if (request->master_state == REQUEST_STOP_PROCESSING) return RLM_MODULE_HANDLED;
 
-		if (rcode == RLM_MODULE_YIELD) return FR_IO_YIELD;
+		if (rcode == RLM_MODULE_YIELD) return RLM_MODULE_YIELD;
 
 		rad_assert(request->log.unlang_indent == 0);
 
@@ -306,7 +321,7 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request)
 		case RLM_MODULE_FAIL:
 		case RLM_MODULE_INVALID:
 		case RLM_MODULE_REJECT:
-		case RLM_MODULE_USERLOCK:
+		case RLM_MODULE_DISALLOW:
 		default:
 			if ((vp = fr_pair_find_by_da(request->packet->vps,
 						     attr_module_failure_message, TAG_ANY)) != NULL) {
@@ -406,11 +421,11 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request)
 		/* FALL-THROUGH */
 
 	case REQUEST_PROCESS:
-		rcode = unlang_interpret_resume(request);
+		rcode = unlang_interpret(request);
 
-		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
+		if (request->master_state == REQUEST_STOP_PROCESSING) return RLM_MODULE_HANDLED;
 
-		if (rcode == RLM_MODULE_YIELD) return FR_IO_YIELD;
+		if (rcode == RLM_MODULE_YIELD) return RLM_MODULE_YIELD;
 
 		rad_assert(request->log.unlang_indent == 0);
 
@@ -427,7 +442,7 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request)
 		case RLM_MODULE_NOTFOUND:
 		case RLM_MODULE_REJECT:
 		case RLM_MODULE_UPDATED:
-		case RLM_MODULE_USERLOCK:
+		case RLM_MODULE_DISALLOW:
 		default:
 			RDEBUG2("Failed to authenticate the user");
 			request->reply->code = FR_CODE_ACCESS_REJECT;
@@ -528,11 +543,11 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request)
 		/* FALL-THROUGH */
 
 	case REQUEST_SEND:
-		rcode = unlang_interpret_resume(request);
+		rcode = unlang_interpret(request);
 
-		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
+		if (request->master_state == REQUEST_STOP_PROCESSING) return RLM_MODULE_HANDLED;
 
-		if (rcode == RLM_MODULE_YIELD) return FR_IO_YIELD;
+		if (rcode == RLM_MODULE_YIELD) return RLM_MODULE_YIELD;
 
 		rad_assert(request->log.unlang_indent == 0);
 
@@ -540,7 +555,7 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request)
 		case RLM_MODULE_FAIL:
 		case RLM_MODULE_INVALID:
 		case RLM_MODULE_REJECT:
-		case RLM_MODULE_USERLOCK:
+		case RLM_MODULE_DISALLOW:
 		default:
 			/*
 			 *	If we over-ride an ACK with a NAK, run
@@ -591,7 +606,7 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request)
 				 */
 				if (fr_request_to_state(inst->state_tree, request) < 0) {
 					request->reply->code = FR_CODE_DO_NOT_RESPOND;
-					return FR_IO_REPLY;
+					return RLM_MODULE_OK;
 				}
 			} else {
 				fr_state_discard(inst->state_tree, request);
@@ -613,10 +628,10 @@ static fr_io_final_t mod_process(void const *instance, REQUEST *request)
 		break;
 
 	default:
-		return FR_IO_FAIL;
+		return RLM_MODULE_FAIL;
 	}
 
-	return FR_IO_REPLY;
+	return RLM_MODULE_OK;
 }
 
 static virtual_server_compile_t compile_list[] = {
@@ -624,31 +639,37 @@ static virtual_server_compile_t compile_list[] = {
 		.name = "recv",
 		.name2 = "Access-Request",
 		.component = MOD_AUTHORIZE,
+		.offset = offsetof(proto_radius_auth_t, recv_access_request),
 	},
 	{
 		.name = "send",
 		.name2 = "Access-Accept",
 		.component = MOD_POST_AUTH,
+		.offset = offsetof(proto_radius_auth_t, send_access_accept),
 	},
 	{
 		.name = "send",
 		.name2 = "Access-Challenge",
 		.component = MOD_POST_AUTH,
+		.offset = offsetof(proto_radius_auth_t, send_access_challenge),
 	},
 	{
 		.name = "send",
 		.name2 = "Access-Reject",
 		.component = MOD_POST_AUTH,
+		.offset = offsetof(proto_radius_auth_t, send_access_reject),
 	},
 	{
 		.name = "send",
 		.name2 = "Do-Not-Respond",
 		.component = MOD_POST_AUTH,
+		.offset = offsetof(proto_radius_auth_t, send_do_not_respond),
 	},
 	{
 		.name = "send",
 		.name2 = "Protocol-Error",
 		.component = MOD_POST_AUTH,
+		.offset = offsetof(proto_radius_auth_t, send_protocol_error),
 	},
 	{
 		.name = "authenticate",

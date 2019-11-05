@@ -86,6 +86,7 @@ typedef void (*dl_unload_t)(dl_t const *module, void *symbol, void *user_ctx);
 /*
  *	Functions
  */
+void			*dl_open_by_sym(char const *sym_name, int flags);
 
 int			dl_symbol_init(dl_loader_t *dl_loader, dl_t const *dl);
 
@@ -104,7 +105,7 @@ void			dl_symbol_free_cb_unregister(dl_loader_t *dl_loader,
 						     char const *symbol, dl_unload_t func);
 
 dl_t			*dl_by_name(dl_loader_t *dl_loader, char const *name,
-				    void *uctx, bool uctx_free, bool sym_global);
+				    void *uctx, bool uctx_free);
 
 char const		*dl_search_path(dl_loader_t *dl_loader);
 

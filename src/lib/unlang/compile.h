@@ -18,7 +18,7 @@
 /**
  * $Id$
  *
- * @file unlang/interpret.h
+ * @file unlang/compile.h
  * @brief Declarations for the unlang interpreter.
  *
  * @copyright 2019 The FreeRADIUS server project
@@ -33,9 +33,6 @@ extern "C" {
 #include <freeradius-devel/server/tmpl.h>
 
 int		unlang_compile(CONF_SECTION *cs, rlm_components_t component, vp_tmpl_rules_t const *rules);
-
-int		unlang_compile_subsection(CONF_SECTION *subsection,
-					  rlm_components_t component, vp_tmpl_rules_t const *rules);
 
 bool		unlang_compile_is_keyword(const char *name);
 

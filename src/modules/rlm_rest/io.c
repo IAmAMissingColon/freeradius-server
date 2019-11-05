@@ -182,13 +182,13 @@ static inline void _rest_io_service(rlm_rest_thread_t *t, int fd, int event)
  * @param[in] fd	that errored.
  * @param[in] flags	from kevent.
  * @param[in] fd_errno	from kevent.
- * @param[in] ctx	The rlm_rest_thread_t specific to this thread.
+ * @param[in] uctx	The rlm_rest_thread_t specific to this thread.
  */
-static void _rest_io_service_errored(UNUSED fr_event_list_t *el, int fd, UNUSED int flags, int fd_errno, void *ctx)
+static void _rest_io_service_errored(UNUSED fr_event_list_t *el, int fd, UNUSED int flags, int fd_errno, void *uctx)
 {
 	rlm_rest_thread_t *t;
 
-	t = talloc_get_type_abort(ctx, rlm_rest_thread_t);
+	t = talloc_get_type_abort(uctx, rlm_rest_thread_t);
 
 	DEBUG4("libcurl fd %i errored: %s", fd, fr_syserror(fd_errno));
 
@@ -200,13 +200,13 @@ static void _rest_io_service_errored(UNUSED fr_event_list_t *el, int fd, UNUSED 
  * @param[in] el	fd was registered with.
  * @param[in] fd	that became writable.
  * @param[in] flags	from kevent.
- * @param[in] ctx	The rlm_rest_thread_t specific to this thread.
+ * @param[in] uctx	The rlm_rest_thread_t specific to this thread.
  */
-static void _rest_io_service_writable(UNUSED fr_event_list_t *el, int fd, UNUSED int flags, void *ctx)
+static void _rest_io_service_writable(UNUSED fr_event_list_t *el, int fd, UNUSED int flags, void *uctx)
 {
 	rlm_rest_thread_t *t;
 
-	t = talloc_get_type_abort(ctx, rlm_rest_thread_t);
+	t = talloc_get_type_abort(uctx, rlm_rest_thread_t);
 
 	DEBUG4("libcurl fd %i now writable", fd);
 
@@ -218,13 +218,13 @@ static void _rest_io_service_writable(UNUSED fr_event_list_t *el, int fd, UNUSED
  * @param[in] el	fd was registered with.
  * @param[in] fd	that became readable.
  * @param[in] flags	from kevent.
- * @param[in] ctx	The rlm_rest_thread_t specific to this thread.
+ * @param[in] uctx	The rlm_rest_thread_t specific to this thread.
  */
-static void _rest_io_service_readable(UNUSED fr_event_list_t *el, int fd, UNUSED int flags, void *ctx)
+static void _rest_io_service_readable(UNUSED fr_event_list_t *el, int fd, UNUSED int flags, void *uctx)
 {
 	rlm_rest_thread_t *t;
 
-	t = talloc_get_type_abort(ctx, rlm_rest_thread_t);
+	t = talloc_get_type_abort(uctx, rlm_rest_thread_t);
 
 	DEBUG4("libcurl fd %i now readable", fd);
 
@@ -402,7 +402,7 @@ void rest_io_module_action(void *instance, void *thread, REQUEST *request, void 
  * @param[in] rctx	rlm_rest_handle_t currently used by the request.
  * @param[in] action	What happened.
  */
-void rest_io_xlat_action(REQUEST *request, UNUSED void *instance, void *thread, void *rctx, fr_state_signal_t action)
+void rest_io_xlat_signal(REQUEST *request, UNUSED void *instance, void *thread, void *rctx, fr_state_signal_t action)
 {
 	rest_xlat_thread_inst_t		*xti = talloc_get_type_abort(thread, rest_xlat_thread_inst_t);
 	rlm_rest_t			*mod_inst = xti->inst;

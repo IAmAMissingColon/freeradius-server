@@ -160,6 +160,50 @@ static int dl_handle_cmp(void const *one, void const *two)
 	return strcmp(((dl_t const *)one)->name, ((dl_t const *)two)->name);
 }
 
+/** Utility function to dlopen the library containing a particular symbol
+ *
+ * @note Not really part of our 'dl' API, just a convenience function.
+ *
+ * @param[in] sym_name	to resolve.
+ * @param[in] flags	to pass to dlopen.
+ * @return
+ *	- NULL on error.
+ *      - A new handle on success.
+ */
+void *dl_open_by_sym(char const *sym_name, int flags)
+{
+	Dl_info		info;
+	void		*sym;
+	void		*handle;
+
+	/*
+	 *	Resolve the test symbol in our own symbol space by
+	 *	iterating through all the libraries.
+	 *	This might be slow.  Don't do this at runtime!
+	 */
+	sym = dlsym(RTLD_DEFAULT, sym_name);
+	if (!sym) {
+		fr_strerror_printf("Can't resolve symbol %s", sym_name);
+		return NULL;
+	}
+
+	/*
+	 *	Lookup the library the symbol belongs to
+	 */
+	if (dladdr(sym, &info) == 0) {
+		fr_strerror_printf("Failed retrieving info for \"%s\" (%p)", sym_name, sym);
+		return NULL;
+	}
+
+	handle = dlopen(info.dli_fname, flags);
+	if (!handle) {
+		fr_strerror_printf("Failed loading \"%s\": %s", info.dli_fname, dlerror());
+		return NULL;
+	}
+
+	return handle;
+}
+
 /** Walk over the registered init callbacks, searching for the symbols they depend on
  *
  * Allows code outside of the dl API to register initialisation functions that get
@@ -184,7 +228,18 @@ int dl_symbol_init(dl_loader_t *dl_loader, dl_t const *dl)
 	     init;
 	     init = fr_cursor_next(&cursor)) {
 		if (init->symbol) {
+			char *p;
+
 			snprintf(buffer, sizeof(buffer), "%s_%s", dl->name, init->symbol);
+
+			/*
+			 *	'-' is not a valid symbol character in
+			 *	C.  But "libfreeradius-radius" is a
+			 *	valid library name.  So we hash things together.
+			 */
+			for (p = buffer; *p != '\0'; p++) {
+				if (*p == '-') *p = '_';
+			}
 
 			sym = dlsym(dl->handle, buffer);
 			if (!sym) {
@@ -208,7 +263,7 @@ int dl_symbol_init(dl_loader_t *dl_loader, dl_t const *dl)
  * @param[in] dl_loader	Tree of dynamically loaded libraries, and callbacks.
  * @param[in] dl	to search for symbols in.
  */
-static void dl_symbol_free(dl_loader_t *dl_loader, dl_t const *dl)
+static int dl_symbol_free(dl_loader_t *dl_loader, dl_t const *dl)
 {
 	dl_symbol_free_t	*free;
 	fr_cursor_t		cursor;
@@ -220,7 +275,9 @@ static void dl_symbol_free(dl_loader_t *dl_loader, dl_t const *dl)
 		if (free->symbol) {
 			char *sym_name = NULL;
 
-			MEM(sym_name = talloc_typed_asprintf(NULL, "%s_%s", dl->name, free->symbol));
+			sym_name = talloc_typed_asprintf(NULL, "%s_%s", dl->name, free->symbol);
+			if (!sym_name) return -1;
+
 			sym = dlsym(dl->handle, sym_name);
 			talloc_free(sym_name);
 
@@ -229,6 +286,8 @@ static void dl_symbol_free(dl_loader_t *dl_loader, dl_t const *dl)
 
 		free->func(dl, sym, free->ctx);
 	}
+
+	return 0;
 }
 
 /** Register a callback to execute when a dl with a particular symbol is first loaded
@@ -257,7 +316,9 @@ int dl_symbol_init_cb_register(dl_loader_t *dl_loader, unsigned int priority,
 
 	dl_symbol_init_cb_unregister(dl_loader, symbol, func);
 
-	MEM(n = talloc(dl_loader, dl_symbol_init_t));
+	n = talloc(dl_loader, dl_symbol_init_t);
+	if (!n) return -1;
+
 	n->priority = priority;
 	n->symbol = symbol;
 	n->func = func;
@@ -315,7 +376,9 @@ int dl_symbol_free_cb_register(dl_loader_t *dl_loader, unsigned int priority,
 
 	dl_symbol_free_cb_unregister(dl_loader, symbol, func);
 
-	MEM(n = talloc(dl_loader, dl_symbol_free_t));
+	n = talloc(dl_loader, dl_symbol_free_t);
+	if (!n) return -1;
+
 	n->priority = priority;
 	n->symbol = symbol;
 	n->func = func;
@@ -380,19 +443,12 @@ static int _dl_free(dl_t *dl)
  * @param[in] uctx		Data to store within the dl_t.
  * @param[in] uctx_free		talloc_free the passed in uctx data if this
  *				dl_t is freed.
- * @param[in] sym_global	Set RTLD_GLOBAL to place all symbols from the module
- *				in the global symbol table.
  * @return
  *	- A new dl_t on success, or a pointer to an existing
  *	  one with the reference count increased.
  *	- NULL on error.
  */
-dl_t *dl_by_name(dl_loader_t *dl_loader, char const *name, void *uctx, bool uctx_free,
-#ifdef RTLD_GLOBAL
-		 bool sym_global)
-#else
-		 UNUSED bool sym_global)
-#endif
+dl_t *dl_by_name(dl_loader_t *dl_loader, char const *name, void *uctx, bool uctx_free)
 {
 	int		flags = RTLD_NOW;
 	void		*handle = NULL;
@@ -409,11 +465,6 @@ dl_t *dl_by_name(dl_loader_t *dl_loader, char const *name, void *uctx, bool uctx
 		return dl;
 	}
 
-#ifdef RTLD_GLOBAL
-	if (sym_global) {
-		flags |= RTLD_GLOBAL;
-	} else
-#endif
 	flags |= RTLD_LOCAL;
 
 	/*
@@ -498,6 +549,7 @@ dl_t *dl_by_name(dl_loader_t *dl_loader, char const *name, void *uctx, bool uctx
 		 *	the error from the last dlopen().
 		 */
 		if (!handle) {
+			talloc_free(ctx);
 			fr_strerror_printf("%s", dlerror());
 			return NULL;
 		}

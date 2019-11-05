@@ -699,7 +699,7 @@ int map_afrom_vp(TALLOC_CTX *ctx, vp_map_t **out, VALUE_PAIR *vp, vp_tmpl_rules_
 	map->lhs->tmpl_num = NUM_ANY;
 	map->lhs->tmpl_tag = vp->tag;
 
-	tmpl_snprint(buffer, sizeof(buffer), map->lhs);
+	tmpl_snprint(NULL, buffer, sizeof(buffer), map->lhs);
 	map->lhs->name = talloc_typed_strdup(map->lhs, buffer);
 	map->lhs->len = talloc_array_length(map->lhs->name) - 1;
 	map->lhs->quote = T_BARE_WORD;
@@ -877,11 +877,7 @@ static int map_exec_to_vp(TALLOC_CTX *ctx, VALUE_PAIR **out, REQUEST *request, v
 	{
 		VALUE_PAIR *vp;
 
-		vp = fr_pair_afrom_da(ctx, map->lhs->tmpl_da);
-		if (!vp) {
-			REDEBUG("Out of memory");
-			return -1;
-		}
+		MEM(vp = fr_pair_afrom_da(ctx, map->lhs->tmpl_da));
 		vp->op = map->op;
 		vp->tag = map->lhs->tmpl_tag;
 		if (fr_pair_value_from_str(vp, answer, -1, '"', false) < 0) {
@@ -1606,9 +1602,7 @@ static inline VALUE_PAIR *map_list_mod_to_vp(TALLOC_CTX *ctx, vp_tmpl_t const *a
 {
 	VALUE_PAIR *vp;
 
-	vp = fr_pair_afrom_da(ctx, attr->tmpl_da);
-	if (!vp) return NULL;
-
+	MEM(vp = fr_pair_afrom_da(ctx, attr->tmpl_da));
 	vp->tag = attr->tmpl_tag;
 
 	if (fr_value_box_copy(vp, &vp->data, value) < 0) {
@@ -1714,7 +1708,7 @@ static inline void map_list_mod_debug(REQUEST *request,
 	{
 		char buffer[256];
 
-		tmpl_snprint(buffer, sizeof(buffer), map->rhs);
+		tmpl_snprint(NULL, buffer, sizeof(buffer), map->rhs);
 		rhs = fr_asprintf(request, "%s -> %s%pV%s", buffer, quote, vb, quote);
 	}
 		break;
@@ -2149,8 +2143,7 @@ int map_to_vp(TALLOC_CTX *ctx, VALUE_PAIR **out, REQUEST *request, vp_map_t cons
 		rad_assert(map->lhs->tmpl_da);	/* We need to know which attribute to create */
 		rad_assert(map->rhs->tmpl_xlat != NULL);
 
-		n = fr_pair_afrom_da(ctx, map->lhs->tmpl_da);
-		if (!n) return -1;
+		MEM(n = fr_pair_afrom_da(ctx, map->lhs->tmpl_da));
 
 		/*
 		 *	We do the debug printing because xlat_aeval_compiled
@@ -2186,8 +2179,7 @@ int map_to_vp(TALLOC_CTX *ctx, VALUE_PAIR **out, REQUEST *request, vp_map_t cons
 		rad_assert(tmpl_is_attr(map->lhs));
 		rad_assert(map->lhs->tmpl_da);	/* We need to know which attribute to create */
 
-		n = fr_pair_afrom_da(ctx, map->lhs->tmpl_da);
-		if (!n) return -1;
+		MEM(n = fr_pair_afrom_da(ctx, map->lhs->tmpl_da));
 
 		str = NULL;
 		slen = xlat_aeval(request, &str, request, map->rhs->name, NULL, NULL);
@@ -2212,8 +2204,7 @@ int map_to_vp(TALLOC_CTX *ctx, VALUE_PAIR **out, REQUEST *request, vp_map_t cons
 		rad_assert(tmpl_is_attr(map->lhs));
 		rad_assert(map->lhs->tmpl_da);	/* We need to know which attribute to create */
 
-		n = fr_pair_afrom_da(ctx, map->lhs->tmpl_da);
-		if (!n) return -1;
+		MEM(n = fr_pair_afrom_da(ctx, map->lhs->tmpl_da));
 
 		if (fr_pair_value_from_str(n, map->rhs->name, -1, '\0', false) < 0) {
 			rcode = 0;
@@ -2249,8 +2240,7 @@ int map_to_vp(TALLOC_CTX *ctx, VALUE_PAIR **out, REQUEST *request, vp_map_t cons
 
 			(void) fr_cursor_init(&to, out);
 			for (; vp; vp = fr_cursor_current(&from)) {
-				n = fr_pair_afrom_da(ctx, map->lhs->tmpl_da);
-				if (!n) return -1;
+				MEM(n = fr_pair_afrom_da(ctx, map->lhs->tmpl_da));
 
 				if (fr_value_box_cast(n, &n->data,
 						      map->lhs->tmpl_da->type, map->lhs->tmpl_da, &vp->data) < 0) {
@@ -2289,8 +2279,7 @@ int map_to_vp(TALLOC_CTX *ctx, VALUE_PAIR **out, REQUEST *request, vp_map_t cons
 		rad_assert(map->lhs->tmpl_da);
 		rad_assert(tmpl_is_attr(map->lhs));
 
-		n = fr_pair_afrom_da(ctx, map->lhs->tmpl_da);
-		if (!n) return -1;
+		MEM(n = fr_pair_afrom_da(ctx, map->lhs->tmpl_da));
 
 		if (map->lhs->tmpl_da->type == map->rhs->tmpl_value_type) {
 			if (fr_value_box_copy(n, &n->data, &map->rhs->tmpl_value) < 0) {
@@ -2774,27 +2763,39 @@ finish:
 
 /**  Print a map to a string
  *
- * @param[out] out Buffer to write string to.
- * @param[in] outlen Size of the output buffer.
- * @param[in] map to print.
+ * @param[out] need	The buffer space we would have needed to
+ *			print more of the string.
+ * @param[out] out	Buffer to write string to.
+ * @param[in] outlen	Size of the output buffer.
+ * @param[in] map	to print.
  * @return
  *	- The number of bytes written to the out buffer.
  *	- A number >= outlen if truncation has occurred.
  */
-size_t map_snprint(char *out, size_t outlen, vp_map_t const *map)
+size_t map_snprint(size_t *need, char *out, size_t outlen, vp_map_t const *map)
 {
 	size_t		len;
 	char		*p = out;
 	char		*end = out + outlen;
+	size_t		our_need;
+
+	if (!need) need = &our_need;
+
+	RETURN_IF_NO_SPACE_INIT(need, 1, p, out, end);
 
 	MAP_VERIFY(map);
 
-	len = tmpl_snprint(out, (end - p) - 1, map->lhs);		/* -1 for proceeding ' ' */
-	RETURN_IF_TRUNCATED(p, len, (end - p) - 1);
+	len = tmpl_snprint(need, out, end - p, map->lhs);
+	if (*need) return len;
+	p += len;
 
+	RETURN_IF_NO_SPACE(need, 1, p, out, end);
 	*(p++) = ' ';
-	len = strlcpy(p, fr_token_name(map->op), (end - p) - 1);	/* -1 for proceeding ' ' */
-	RETURN_IF_TRUNCATED(p, len, (end - p) - 1);
+
+	len = strlcpy(p, fr_token_name(map->op), end - p);
+	RETURN_IF_TRUNCATED(need, len, p, out, end);
+
+	RETURN_IF_NO_SPACE(need, 1, p, out, end);
 	*(p++) = ' ';
 
 	/*
@@ -2802,7 +2803,7 @@ size_t map_snprint(char *out, size_t outlen, vp_map_t const *map)
 	 */
 	if ((map->op == T_OP_CMP_TRUE) || (map->op == T_OP_CMP_FALSE)) {
 		len = strlcpy(p, "ANY", (end - p));
-		RETURN_IF_TRUNCATED(p, len, (end - p) - 1);
+		RETURN_IF_TRUNCATED(need, len, p, out, end - 1);
 		return p - out;
 	}
 
@@ -2811,13 +2812,19 @@ size_t map_snprint(char *out, size_t outlen, vp_map_t const *map)
 	if (tmpl_is_attr(map->lhs) &&
 	    (map->lhs->tmpl_da->type == FR_TYPE_STRING) &&
 	    tmpl_is_unparsed(map->rhs)) {
+	    	RETURN_IF_NO_SPACE(need, 1, p, out, end);
 		*(p++) = '\'';
-		len = tmpl_snprint(p, (end - p) - 1, map->rhs);	/* -1 for proceeding '\'' */
-		RETURN_IF_TRUNCATED(p, len, (end - p) - 1);
+
+		len = tmpl_snprint(need, p, end - p, map->rhs);
+		if (*need) return len;
+		p += len;
+
+		RETURN_IF_NO_SPACE(need, 1, p, out, end);
 		*(p++) = '\'';
 	} else {
-		len = tmpl_snprint(p, end - p, map->rhs);
-		RETURN_IF_TRUNCATED(p, len, (end - p) - 1);
+		len = tmpl_snprint(need, p, end - p, map->rhs);
+		if (*need) return len;
+		p += len;
 	}
 
 	*p = '\0';
@@ -2884,7 +2891,7 @@ void map_debug_log(REQUEST *request, vp_map_t const *map, VALUE_PAIR const *vp)
 		 *	the quoting based on the data type.
 		 */
 		value = fr_pair_value_asprint(request, vp, quote[0]);
-		tmpl_snprint(buffer, sizeof(buffer), &vpt);
+		tmpl_snprint(NULL, buffer, sizeof(buffer), &vpt);
 		rhs = talloc_typed_asprintf(request, "%s -> %s%s%s", buffer, quote, value, quote);
 	}
 		break;
@@ -2901,7 +2908,7 @@ void map_debug_log(REQUEST *request, vp_map_t const *map, VALUE_PAIR const *vp)
 		 *	the quoting based on the data type.
 		 */
 		value = fr_pair_value_asprint(request, vp, quote[0]);
-		tmpl_snprint(buffer, sizeof(buffer), map->rhs);
+		tmpl_snprint(NULL, buffer, sizeof(buffer), map->rhs);
 		rhs = talloc_typed_asprintf(request, "%s -> %s%s%s", buffer, quote, value, quote);
 	}
 		break;
@@ -2919,14 +2926,14 @@ void map_debug_log(REQUEST *request, vp_map_t const *map, VALUE_PAIR const *vp)
 		 *	map name.
 		 */
 		if (vp) {
-			tmpl_snprint(buffer, sizeof(buffer), map->lhs);
+			tmpl_snprint(NULL, buffer, sizeof(buffer), map->lhs);
 			RDEBUG2("%s%s %s %s", buffer, vp->da->name, fr_table_str_by_value(fr_tokens_table, vp->op, "<INVALID>"), rhs);
 			break;
 		}
 		/* FALL-THROUGH */
 
 	case TMPL_TYPE_ATTR:
-		tmpl_snprint(buffer, sizeof(buffer), map->lhs);
+		tmpl_snprint(NULL, buffer, sizeof(buffer), map->lhs);
 		RDEBUG2("%s %s %s", buffer, fr_table_str_by_value(fr_tokens_table, vp ? vp->op : map->op, "<INVALID>"), rhs);
 		break;
 

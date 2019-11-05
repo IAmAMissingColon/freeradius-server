@@ -17,7 +17,7 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * @copyright 2013 Network RADIUS SARL (info@networkradius.com)
+ * @copyright 2013 Network RADIUS SARL (legal@networkradius.com)
  */
 
 #include <freeradius-devel/server/base.h>
@@ -72,7 +72,7 @@ static rlm_rcode_t arp_process(REQUEST *request)
 
 	request->component = "arp";
 
-	return unlang_interpret(request, unlang, RLM_MODULE_NOOP);
+	return unlang_interpret_section(request, unlang, RLM_MODULE_NOOP);
 }
 
 

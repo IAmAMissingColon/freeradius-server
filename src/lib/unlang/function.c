@@ -49,7 +49,7 @@ static unlang_t function_instruction = {
 		[RLM_MODULE_OK]		= 0,
 		[RLM_MODULE_HANDLED]	= 0,
 		[RLM_MODULE_INVALID]	= 0,
-		[RLM_MODULE_USERLOCK]	= 0,
+		[RLM_MODULE_DISALLOW]	= 0,
 		[RLM_MODULE_NOTFOUND]	= 0,
 		[RLM_MODULE_NOOP]	= 0,
 		[RLM_MODULE_UPDATED]	= 0
@@ -60,10 +60,8 @@ static unlang_t function_instruction = {
  *
  * @param[in] request	The current request.
  * @param[out] presult	The frame result.  Always set to RLM_MODULE_OK (fixme?).
- * @param[out] priority of the result.
  */
-static unlang_action_t unlang_function_call(REQUEST *request,
-					    rlm_rcode_t *presult, int *priority)
+static unlang_action_t unlang_function_call(REQUEST *request, rlm_rcode_t *presult)
 {
 	unlang_stack_t			*stack = request->stack;
 	unlang_stack_frame_t		*frame = &stack->frame[stack->depth];
@@ -78,9 +76,9 @@ static unlang_action_t unlang_function_call(REQUEST *request,
 	caller = request->module;
 	request->module = NULL;
 	if (!is_repeatable(frame)) {
-		ua = state->func(request, presult, priority, state->uctx);
+		ua = state->func(request, presult, NULL, state->uctx);
 	} else {
-		ua = state->repeat(request, presult, priority, state->uctx);
+		ua = state->repeat(request, presult, NULL, state->uctx);
 	}
 	request->module = caller;
 
@@ -107,7 +105,7 @@ void unlang_interpret_push_function(REQUEST *request, unlang_function_t func, un
 	/*
 	 *	Push module's function
 	 */
-	unlang_interpret_push(request, &function_instruction, RLM_MODULE_UNKNOWN, UNLANG_NEXT_STOP, false);
+	unlang_interpret_push(request, &function_instruction, RLM_MODULE_UNKNOWN, UNLANG_NEXT_STOP, UNLANG_SUB_FRAME);
 	frame = &stack->frame[stack->depth];
 
 	/*
@@ -117,10 +115,9 @@ void unlang_interpret_push_function(REQUEST *request, unlang_function_t func, un
 	if (repeat) repeatable_set(frame);
 
 	/*
-	 *	Allocate state
+	 *	Initialize state
 	 */
-	MEM(frame->state = state = talloc_zero(stack, unlang_frame_state_func_t));
-
+	state = frame->state;
 	state->func = func;
 	state->repeat = repeat;
 	state->uctx = uctx;
@@ -131,8 +128,10 @@ void unlang_function_init(void)
 	unlang_register(UNLANG_TYPE_FUNCTION,
 			   &(unlang_op_t){
 				.name = "function",
-				.func = unlang_function_call,
-				.debug_braces = false
+				.interpret = unlang_function_call,
+				.debug_braces = false,
+			        .frame_state_size = sizeof(unlang_frame_state_func_t),
+				.frame_state_name = "unlang_frame_state_func_t",
 			   });
 
 }

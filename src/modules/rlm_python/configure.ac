@@ -25,12 +25,18 @@ if test x$with_[]modname != xno; then
 	)
 
 	if test "x$PYTHON_CONFIG_BIN" = x; then
-		AC_CHECK_PROGS(PYTHON_CONFIG_BIN, [ python2.7-config python-config ], not-found, [${PATH}:/usr/bin:/usr/local/bin])
+		AC_CHECK_PROGS(PYTHON_CONFIG_BIN, [ python-config python3-config python2.7-config ], not-found, [${PATH}:/usr/bin:/usr/local/bin])
 	fi
 
 	if test "x$PYTHON_CONFIG_BIN" = "xnot-found"; then
 		fail="python-config"
 	fi
+
+	dnl #
+	dnl # It is necessary due to a weird behavior with 'python-config'
+	dnl #
+	old_CFLAGS="$CFLAGS"
+	unset CFLAGS
 
 	python_cflags=`${PYTHON_CONFIG_BIN} --cflags`
 	AC_MSG_NOTICE([${PYTHON_CONFIG_BIN}'s cflags were \"${python_cflags}\"])
@@ -40,19 +46,16 @@ if test x$with_[]modname != xno; then
 	dnl # Strip optimisation flags (-O[0-9]?). We decide our optimisation level, not python.
 	dnl # -D_FORTIFY_SOURCE needs -O.
 	dnl # Strip debug symbol flags (-g[0-9]?). We decide on debugging symbols, not python
-	dnl # Strip -Werror
-	dnl # Strip -Wall, we decide what warnings are important
+	dnl # Strip -W*, we decide what warnings are important
 	dnl # Strip -DNDEBUG
 	mod_cflags=`echo $python_cflags | sed -e '\
 		s/-I/-isystem/g;\
 		s/-isysroot[[ =]]\{0,1\}[[^-]]*//g;\
-		s/-O[[[:digit:]]][[[:blank:]]]*//g;\
+		s/-O[[^[[:blank:]]]]*//g;\
 		s/-Wp,-D_FORTIFY_SOURCE=[[[:digit:]]]//g;\
-		s/-g[[[:digit:]]][[[:space:]]]*//g;\
-		s/-g[[[:space:]]]*//g;\
-		s/-Werror\([[ =]]\{0,1\}[[^ ]]*\)\{0,1\}//g;\
-		s/-Wall[[[:space:]]]//g;\
-		s/-DNDEBUG[[[:blank:]]]*//g
+		s/-g[[^ ]]*//g;\
+		s/-W[[^ ]]*//g;\
+		s/-DNDEBUG[[[:blank:]]]*//g;
 		'`
 	AC_MSG_NOTICE([Sanitized cflags were \"${mod_cflags}\"])
 
@@ -69,6 +72,8 @@ if test x$with_[]modname != xno; then
 		s/-Xlinker -export-dynamic//g;\
 		'`
 	AC_MSG_NOTICE([Sanitized ldflags were \"${mod_ldflags}\"])
+
+	CFLAGS=$old_CFLAGS
 
 	targetname="rlm_python"
 else

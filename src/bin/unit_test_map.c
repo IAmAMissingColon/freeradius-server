@@ -22,11 +22,13 @@
 
 RCSID("$Id$")
 
-#include <freeradius-devel/util/base.h>
 
-#include <freeradius-devel/util/conf.h>
+#include <freeradius-devel/server/cf_file.h>
 #include <freeradius-devel/server/modpriv.h>
 #include <freeradius-devel/server/module.h>
+
+#include <freeradius-devel/util/conf.h>
+#include <freeradius-devel/util/base.h>
 
 #include <ctype.h>
 
@@ -133,7 +135,7 @@ static int process_file(char const *filename)
 	}
 
 	for (map = head; map != NULL; map = map->next) {
-		map_snprint(buffer + 1, sizeof(buffer) - 1, map);
+		map_snprint(NULL, buffer + 1, sizeof(buffer) - 1, map);
 		puts(buffer);
 	}
 	printf("}\n");
@@ -251,7 +253,7 @@ cleanup:
 
 	fr_strerror_free();
 
-	if (receipt_file && (ret == EXIT_SUCCESS) && (fr_file_touch(receipt_file, 0644) < 0)) {
+	if (receipt_file && (ret == EXIT_SUCCESS) && (fr_file_touch(NULL, receipt_file, 0644, true, 0755) <= 0)) {
 		fr_perror("unit_test_map");
 		ret = EXIT_FAILURE;
 	}

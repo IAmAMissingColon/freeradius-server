@@ -8,11 +8,6 @@
 #
 
 #
-#	we didn't called ./configure? just define the version.
-#
-RADIUSD_VERSION_STRING := $(shell cat VERSION)
-
-#
 #  The default rule is "all".
 #
 all:
@@ -41,6 +36,13 @@ endif
 endif
 endif
 
+#
+#  'configure' was not run?  Get the version number from the file.
+#
+ifeq "$(RADIUS_VERSION_STRING)" ""
+RADIUSD_VERSION_STRING := $(shell cat VERSION)
+endif
+
 MFLAGS += --no-print-directory
 
 # The version of GNU Make is too old, don't use it (.FEATURES variable was
@@ -59,8 +61,7 @@ PROTOCOLS    := \
 	arp \
 	dhcpv4 \
 	dhcpv6 \
-	eap/aka \
-	eap/sim \
+	eap/aka-sim \
 	ethernet \
 	freeradius \
 	radius \
@@ -74,50 +75,6 @@ ifeq "$(findstring crossbuild,$(MAKECMDGOALS))" ""
 include scripts/boiler.mk
 endif
 endif
-
-#
-#  To work around OpenSSL issues with travis.
-#
-.PHONY:
-raddb/test.conf:
-	@echo 'security {' >> $@
-	@echo '        allow_vulnerable_openssl = yes' >> $@
-	@echo '}' >> $@
-	@echo '$$INCLUDE radiusd.conf' >> $@
-
-#
-#  Run "radiusd -C", looking for errors.
-#
-# Only redirect STDOUT, which should contain details of why the test failed.
-# Don't molest STDERR as this may be used to receive output from a debugger.
-$(BUILD_DIR)/tests/radiusd-c: raddb/test.conf ${BUILD_DIR}/bin/radiusd $(GENERATED_CERT_FILES) | build.raddb
-	@printf "radiusd -C... "
-	@if ! FR_LIBRARY_PATH=./build/lib/local/.libs/ ./build/make/jlibtool --mode=execute ./build/bin/local/radiusd -XCMd ./raddb -n debug -D ./share/dictionary -n test > $(BUILD_DIR)/tests/radiusd.config.log; then \
-		rm -f raddb/test.conf; \
-		cat $(BUILD_DIR)/tests/radiusd.config.log; \
-		echo "fail"; \
-		echo "FR_LIBRARY_PATH=./build/lib/local/.libs/ ./build/make/jlibtool --mode=execute ./build/bin/local/radiusd -XCMd ./raddb -n debug -D ./share/dictionary"; \
-		exit 1; \
-	fi
-	@rm -f raddb/test.conf
-	@echo "ok"
-	@touch $@
-
-test: ${BUILD_DIR}/bin/radiusd ${BUILD_DIR}/bin/radclient tests.bin tests.trie tests.unit tests.xlat tests.map tests.keywords tests.auth tests.modules $(BUILD_DIR)/tests/radiusd-c tests.eap | build.raddb
-	@$(MAKE) -C src/tests tests
-
-.PHONY: clean.test
-clean.test: clean.tests.modules
-	@$(MAKE) -C src/tests clean
-
-#  Tests specifically for Travis. We do a LOT more than just
-#  the above tests
-travis-test: raddb/test.conf test
-	@FR_LIBRARY_PATH=./build/lib/local/.libs/ ./build/make/jlibtool --mode=execute ./build/bin/local/radiusd -xxxv -n test
-	@rm -f raddb/test.conf
-	@$(MAKE) install
-	@perl -p -i -e 's/allow_vulnerable_openssl = no/allow_vulnerable_openssl = yes/' ${raddbdir}/radiusd.conf
-	@${sbindir}/radiusd -XC
 
 #
 # The $(R) is a magic variable not defined anywhere in this source.
@@ -401,3 +358,18 @@ whitespace:
 ifneq "$(findstring crossbuild,$(MAKECMDGOALS))" ""
 include scripts/docker/crossbuild/crossbuild.mk
 endif
+
+#
+#  The "coverage" target
+#
+ifneq "$(findstring coverage,$(MAKECMDGOALS))" ""
+include scripts/build/coverage.mk
+endif
+
+#
+#  Clean gcov files, too.
+#
+clean: clean.coverage
+.PHONY: clean.coverage
+clean.coverage:
+	@rm -f ${BUILD_DIR}/radiusd.info $(find ${BUILD_DIR} -name "*.gcda" -print)

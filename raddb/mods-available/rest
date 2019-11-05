@@ -124,7 +124,7 @@ rest {
 	#  The following config items can be used in each of the sections.
 	#  The sections themselves reflect the sections in the server.
 	#
-	#  For example if you list `rest` in the `authorize` section of a `virtual server`,
+	#  For example, if you list `rest` in the `authorize` section of a `virtual server`,
 	#  the settings from the `authorize` section here will be used.
 	#
 	#  The following config items may be listed in any of the sections:
@@ -255,7 +255,7 @@ rest {
 	#  | Code | Meaning      | Process body? | Module code
 	#  | 404  | not found    | no            | notfound
 	#  | 410  | gone         | no            | notfound
-	#  | 403  | forbidden    | no            | userlock
+	#  | 403  | forbidden    | no            | disallow
 	#  | 401  | unauthorized | yes           | reject
 	#  | 204  | no content   | no            | ok
 	#  | 2xx  | successful   | yes           | ok/updated

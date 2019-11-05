@@ -1,6 +1,6 @@
 #pragma once
 /*
- *   This program is is free software; you can redistribute it and/or modify
+ *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
  *   the Free Software Foundation; either version 2 of the License, or (at
  *   your option) any later version.
@@ -49,4 +49,4 @@ typedef struct {
 /*
  *	Process the TTLS portion of an EAP-TTLS request.
  */
-FR_CODE eap_ttls_process(eap_session_t *eap_session, tls_session_t *tls_session) CC_HINT(nonnull);
+FR_CODE eap_ttls_process(REQUEST *request, eap_session_t *eap_session, tls_session_t *tls_session) CC_HINT(nonnull);

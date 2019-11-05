@@ -102,6 +102,7 @@ size_t const fr_radius_attr_sizes[FR_TYPE_MAX + 1][2] = {
 	[FR_TYPE_INT64]			= {8, 8},
 
 	[FR_TYPE_DATE]			= {4, 4},
+	[FR_TYPE_TIME_DELTA]   		= {4, 4},
 	[FR_TYPE_ABINARY]		= {32, ~0},
 
 	[FR_TYPE_TLV]			= {2, ~0},
@@ -212,13 +213,15 @@ size_t fr_radius_attr_len(VALUE_PAIR const *vp)
 {
 	switch (vp->vp_type) {
 	case FR_TYPE_VARIABLE_SIZE:
+		if (vp->da->flags.length) return vp->da->flags.length;	/* Variable type with fixed length */
 		return vp->vp_length;
 
 	default:
 		return fr_radius_attr_sizes[vp->vp_type][0];
 
 	case FR_TYPE_STRUCTURAL:
-		if (!fr_cond_assert(0)) return 0;
+		fr_assert_fail(NULL);
+		return 0;
 	}
 }
 
@@ -1039,13 +1042,15 @@ ssize_t fr_radius_encode(uint8_t *packet, size_t packet_len, uint8_t const *orig
 	packet[2] = (total_length >> 8) & 0xff;
 	packet[3] = total_length & 0xff;
 
+	FR_PROTO_HEX_DUMP(packet, total_length, "%s encoded packet", __FUNCTION__);
+
 	return total_length;
 }
 
 /** Decode a raw RADIUS packet into VPs.
  *
  */
-ssize_t	fr_radius_decode(TALLOC_CTX *ctx, uint8_t *packet, size_t packet_len, uint8_t const *original,
+ssize_t	fr_radius_decode(TALLOC_CTX *ctx, uint8_t const *packet, size_t packet_len, uint8_t const *original,
 			 char const *secret, UNUSED size_t secret_len, VALUE_PAIR **vps)
 {
 	ssize_t			slen;
@@ -1053,6 +1058,7 @@ ssize_t	fr_radius_decode(TALLOC_CTX *ctx, uint8_t *packet, size_t packet_len, ui
 	uint8_t const		*attr, *end;
 	fr_radius_ctx_t		packet_ctx;
 
+	packet_ctx.tmp_ctx = talloc_init("tmp");
 	packet_ctx.secret = secret;
 	packet_ctx.vector = original + 4;
 
@@ -1067,20 +1073,28 @@ ssize_t	fr_radius_decode(TALLOC_CTX *ctx, uint8_t *packet, size_t packet_len, ui
 	 */
 	while (attr < end) {
 		slen = fr_radius_decode_pair(ctx, &cursor, dict_radius, attr, (end - attr), &packet_ctx);
-		if (slen < 0) return slen;
+		if (slen < 0) {
+			talloc_free(packet_ctx.tmp_ctx);
+			return slen;
+		}
 
 		/*
 		 *	If slen is larger than the room in the packet,
 		 *	all kinds of bad things happen.
 		 */
-		 if (!fr_cond_assert(slen <= (end - attr))) return -1;
+		 if (!fr_cond_assert(slen <= (end - attr))) {
+			 talloc_free(packet_ctx.tmp_ctx);
+			 return -1;
+		 }
 
 		attr += slen;
+		talloc_free_children(packet_ctx.tmp_ctx);
 	}
 
 	/*
 	 *	We've parsed the whole packet, return that.
 	 */
+	talloc_free(packet_ctx.tmp_ctx);
 	return packet_len;
 }
 
@@ -1108,3 +1122,26 @@ void fr_radius_free(void)
 
 	fr_dict_autofree(libfreeradius_radius_dict);
 }
+
+static fr_table_num_ordered_t const subtype_table[] = {
+	{ "encrypt=1",		FLAG_ENCRYPT_USER_PASSWORD },
+	{ "encrypt=2",		FLAG_ENCRYPT_TUNNEL_PASSWORD },
+	{ "encrypt=3",		FLAG_ENCRYPT_ASCEND_SECRET },
+	{ "long",		FLAG_EXTENDED_ATTR },
+
+	/*
+	 *	And some humanly-readable names
+	 */
+	{ "encrypt=Ascend-Secret",	FLAG_ENCRYPT_ASCEND_SECRET },
+	{ "encrypt=Tunnel-Password",	FLAG_ENCRYPT_TUNNEL_PASSWORD },
+	{ "encrypt=User-Password",	FLAG_ENCRYPT_USER_PASSWORD },
+};
+
+extern fr_dict_protocol_t libfreeradius_radius_dict_protocol;
+fr_dict_protocol_t libfreeradius_radius_dict_protocol = {
+	.name = "radius",
+	.default_type_size = 1,
+	.default_type_length = 1,
+	.subtype_table = subtype_table,
+	.subtype_table_len = NUM_ELEMENTS(subtype_table),
+};

@@ -410,6 +410,7 @@ static sql_rcode_t sql_socket_init(rlm_sql_handle_t *handle, rlm_sql_config_t *c
 				cass_future_error_message(future, &msg, &msg_len);
 				ERROR("Unable to connect: [%x] %s", (int)ret, msg);
 				cass_future_free(future);
+				pthread_mutex_unlock(&inst->connect_mutex);
 
 				return RLM_SQL_ERROR;
 			}
@@ -493,7 +494,9 @@ static sql_rcode_t sql_fields(char const **out[], rlm_sql_handle_t *handle, rlm_
 		size_t	   col_name_len;
 
 		/* Writes out a pointer to a buffer in the result */
-		cass_result_column_name(conn->result, i, &col_name, &col_name_len);
+		if (cass_result_column_name(conn->result, i, &col_name, &col_name_len) != CASS_OK) {
+			col_name = "<INVALID>";
+		}
 		names[i] = col_name;
 	}
 

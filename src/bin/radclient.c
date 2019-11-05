@@ -226,8 +226,7 @@ static int mschapv1_encode(RADIUS_PACKET *packet, VALUE_PAIR **request,
 	fr_pair_delete_by_da(&packet->vps, attr_ms_chap_challenge);
 	fr_pair_delete_by_da(&packet->vps, attr_ms_chap_response);
 
-	challenge = fr_pair_afrom_da(packet, attr_ms_chap_challenge);
-	if (!challenge) return 0;
+	MEM(challenge = fr_pair_afrom_da(packet, attr_ms_chap_challenge));
 
 	fr_pair_add(request, challenge);
 	challenge->vp_length = 8;
@@ -236,11 +235,7 @@ static int mschapv1_encode(RADIUS_PACKET *packet, VALUE_PAIR **request,
 		p[i] = fr_rand();
 	}
 
-	reply = fr_pair_afrom_da(packet, attr_ms_chap_response);
-	if (!reply) {
-		return 0;
-	}
-
+	MEM(reply = fr_pair_afrom_da(packet, attr_ms_chap_response));
 	fr_pair_add(request, reply);
 	reply->vp_length = 50;
 	reply->vp_octets = p = talloc_array(reply, uint8_t, reply->vp_length);
@@ -1003,8 +998,7 @@ static int send_one_packet(rc_request_t *request)
 		return -1;
 	}
 
-	fr_packet_header_log(&default_log, request->packet, false);
-	if (fr_debug_lvl > L_DBG_LVL_1) fr_pair_list_log(&default_log, request->packet->vps);
+	fr_packet_log(&default_log, request->packet, false);
 
 	return 0;
 }
@@ -1107,8 +1101,7 @@ static int recv_one_packet(fr_time_t wait_time)
 		goto packet_done;
 	}
 
-	fr_packet_header_log(&default_log, request->reply, true);
-	if (fr_debug_lvl >= L_DBG_LVL_1) fr_pair_list_log(&default_log, request->reply->vps);
+	fr_packet_log(&default_log, request->reply, true);
 
 	/*
 	 *	Increment counters...
@@ -1210,6 +1203,13 @@ int main(int argc, char **argv)
 		ERROR("Out of memory");
 		exit(1);
 	}
+
+	/*
+	 *	Always log to stdout
+	 */
+	default_log.dst = L_DST_STDOUT;
+	default_log.fd = STDOUT_FILENO;
+	default_log.print_level = false;
 
 	while ((c = getopt(argc, argv, "46c:d:D:f:Fhn:p:P:qr:sS:t:vx")) != -1) switch (c) {
 		case '4':
@@ -1348,6 +1348,7 @@ int main(int argc, char **argv)
 
 		case 'x':
 			fr_debug_lvl++;
+			if (fr_debug_lvl > 2) default_log.print_level = true;
 			break;
 
 		case 'h':
@@ -1356,12 +1357,6 @@ int main(int argc, char **argv)
 	}
 	argc -= (optind - 1);
 	argv += (optind - 1);
-
-	/*
-	 *	Always log to stdout
-	 */
-	default_log.dst = L_DST_STDOUT;
-	default_log.fd = STDOUT_FILENO;
 
 	if ((argc < 3)  || ((secret == NULL) && (argc < 4))) {
 		ERROR("Insufficient arguments");

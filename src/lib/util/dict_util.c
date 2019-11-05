@@ -24,7 +24,6 @@ RCSID("$Id$")
 
 #include <freeradius-devel/util/conf.h>
 #include <freeradius-devel/util/dict_priv.h>
-#include <freeradius-devel/util/dl.h>
 #include <freeradius-devel/util/hash.h>
 #include <freeradius-devel/util/misc.h>
 #include <freeradius-devel/util/proto.h>
@@ -41,6 +40,8 @@ bool			dict_initialised = false;
 char			*dict_dir_default;		//!< The default location for loading dictionaries if one
 							///< wasn't provided.
 TALLOC_CTX		*dict_ctx;
+
+static dl_loader_t	*dict_loader;			//!< for protocol validation
 
 static fr_hash_table_t	*protocol_by_name = NULL;	//!< Hash containing names of all the registered protocols.
 static fr_hash_table_t	*protocol_by_num = NULL;	//!< Hash containing numbers of all the registered protocols.
@@ -60,6 +61,17 @@ fr_table_num_ordered_t const date_precision_table[] = {
 
 };
 size_t date_precision_table_len = NUM_ELEMENTS(date_precision_table);
+
+static fr_table_num_ordered_t const dhcpv6_subtype_table[] = {
+	{ "dns_label",			FLAG_ENCODE_DNS_LABEL },
+	{ "encode=dns_label",		FLAG_ENCODE_DNS_LABEL },
+};
+static size_t dhcpv6_subtype_table_len = NUM_ELEMENTS(dhcpv6_subtype_table);
+
+static fr_table_num_ordered_t const eap_aka_sim_subtype_table[] = {
+	{ "encrypt=aes-cbc",		1 }, /* any non-zero value will do */
+};
+static size_t eap_aka_sim_subtype_table_len = NUM_ELEMENTS(eap_aka_sim_subtype_table);
 
 /** Magic internal dictionary
  *
@@ -96,6 +108,7 @@ size_t const dict_attr_sizes[FR_TYPE_MAX + 1][2] = {
 	[FR_TYPE_INT32]		= {4, 4},
 
 	[FR_TYPE_DATE]		= {4, 4},
+	[FR_TYPE_TIME_DELTA]   	= {4, 4},
 	[FR_TYPE_ABINARY]	= {32, ~0},
 
 	[FR_TYPE_TLV]		= {2, ~0},
@@ -430,6 +443,7 @@ fr_dict_attr_t *dict_attr_alloc(TALLOC_CTX *ctx,
 		char		buffer[FR_DICT_ATTR_MAX_NAME_LEN + 1];
 		char		*p = buffer;
 		size_t		len;
+		size_t		need;
 		fr_dict_attr_t	tmp;
 
 		memset(&tmp, 0, sizeof(tmp));
@@ -438,8 +452,8 @@ fr_dict_attr_t *dict_attr_alloc(TALLOC_CTX *ctx,
 		len = snprintf(p, sizeof(buffer), "Attr-");
 		p += len;
 
-		len = fr_dict_print_attr_oid(p, sizeof(buffer) - (p - buffer), NULL, &tmp);
-		if (is_truncated(len, sizeof(buffer) - (p - buffer))) {
+		fr_dict_print_attr_oid(&need, p, sizeof(buffer) - (p - buffer), NULL, &tmp);
+		if (need > 0) {
 			fr_strerror_printf("OID string too long for unknown attribute");
 			return NULL;
 		}
@@ -515,6 +529,26 @@ int dict_protocol_add(fr_dict_t *dict)
 		return -1;
 	}
 	dict->in_protocol_by_num = true;
+
+	/*
+	 *	Set the subtype flags and other necessary things.
+	 */
+	switch (dict->root->attr) {
+	case FR_PROTOCOL_DHCPV6:
+		dict->subtype_table = dhcpv6_subtype_table;
+		dict->subtype_table_len = dhcpv6_subtype_table_len;
+		dict->default_type_size = 2;
+		dict->default_type_length = 2;
+		break;
+
+	case FR_PROTOCOL_EAP_AKA_SIM:
+		dict->subtype_table = eap_aka_sim_subtype_table;
+		dict->subtype_table_len = eap_aka_sim_subtype_table_len;
+		break;
+
+	default:
+		break;
+	}
 
 	return 0;
 }
@@ -629,7 +663,7 @@ int dict_attr_child_add(fr_dict_attr_t *parent, fr_dict_attr_t *child)
 		 *	Children are allowed here, but ONLY if this
 		 *	attribute is a key field.
 		 */
-		if (parent->parent && (parent->parent->type == FR_TYPE_STRUCT) && parent->flags.extra) break;
+		if (parent->parent && (parent->parent->type == FR_TYPE_STRUCT) && da_is_key_field(parent)) break;
 		/* FALL-THROUGH */
 
 	default:
@@ -849,7 +883,7 @@ int fr_dict_attr_add(fr_dict_t *dict, fr_dict_attr_t const *parent,
 	old = fr_dict_attr_by_name(dict, name);
 	if (old) {
 		if ((old->parent == parent) && (old->attr == (unsigned int) attr) && (old->type == type) &&
-		    FLAGS_EQUAL(has_tag) && FLAGS_EQUAL(array) && FLAGS_EQUAL(concat) && FLAGS_EQUAL(encrypt)) {
+		    FLAGS_EQUAL(has_tag) && FLAGS_EQUAL(array) && FLAGS_EQUAL(concat) && FLAGS_EQUAL(subtype)) {
 			return 0;
 		}
 
@@ -2094,6 +2128,29 @@ fr_dict_enum_t *fr_dict_enum_by_alias(fr_dict_attr_t const *da, char const *alia
 	return fr_hash_table_finddata(dict->values_by_alias, &find);
 }
 
+int dict_dlopen(fr_dict_t *dict, char const *name)
+{
+	char *module_name;
+	char *p, *q;
+
+	if (!name) return 0;
+
+	module_name = talloc_typed_asprintf(NULL, "libfreeradius-%s", name);
+	for (p = module_name, q = p + talloc_array_length(p) - 1; p < q; p++) *p = tolower(*p);
+
+	/*
+	 *	Pass in dict as the uctx so that we can get at it in
+	 *	any callbacks.
+	 *
+	 *	Not all dictionaries have validation functions.  It's
+	 *	a soft error if they don't exist.
+	 */
+	dict->dl = dl_by_name(dict_loader, module_name, dict, false);
+
+	talloc_free(module_name);
+	return 0;
+}
+
 static int _dict_free_autoref(UNUSED void *ctx, void *data)
 {
 	fr_dict_t *dict = data;
@@ -2189,6 +2246,12 @@ fr_dict_t *dict_alloc(TALLOC_CTX *ctx)
 
 	dict->values_by_da = fr_hash_table_create(dict, dict_enum_value_hash, dict_enum_value_cmp, hash_pool_free);
 	if (!dict->values_by_da) goto error;
+
+	/*
+	 *	Set default type size and length.
+	 */
+	dict->default_type_size = 1;
+	dict->default_type_length = 1;
 
 	return dict;
 }
@@ -2346,14 +2409,14 @@ int fr_dl_dict_attr_autoload(UNUSED dl_t const *module, void *symbol, UNUSED voi
 	return 0;
 }
 
-static void _fr_dict_dump(fr_dict_attr_t const *da, unsigned int lvl)
+static void _fr_dict_dump(fr_dict_t const *dict, fr_dict_attr_t const *da, unsigned int lvl)
 {
 	unsigned int		i;
 	size_t			len;
 	fr_dict_attr_t const	*p;
 	char			flags[256];
 
-	fr_dict_snprint_flags(flags, sizeof(flags), da->type, &da->flags);
+	fr_dict_snprint_flags(flags, sizeof(flags), dict, da->type, &da->flags);
 
 	printf("[%02i] 0x%016" PRIxPTR "%*s %s(%u) %s %s\n", lvl, (unsigned long)da, lvl * 2, " ",
 	       da->name, da->attr, fr_table_str_by_value(fr_value_box_type_table, da->type, "<INVALID>"), flags);
@@ -2361,21 +2424,55 @@ static void _fr_dict_dump(fr_dict_attr_t const *da, unsigned int lvl)
 	len = talloc_array_length(da->children);
 	for (i = 0; i < len; i++) {
 		for (p = da->children[i]; p; p = p->next) {
-			_fr_dict_dump(p, lvl + 1);
+			_fr_dict_dump(dict, p, lvl + 1);
 		}
 	}
 }
 
-void fr_dict_dump(fr_dict_t *dict)
+void fr_dict_dump(fr_dict_t const *dict)
 {
-	_fr_dict_dump(dict->root, 0);
+	_fr_dict_dump(dict, dict->root, 0);
+}
+
+/** Callback to automatically load validation routines for dictionaries.
+ *
+ * @param[in] dl	the library we just loaded
+ * @param[in] symbol	pointer to a fr_dict_protocol_t table
+ * @param[in] user_ctx	the global context which we don't need
+ * @return
+ *	- 0 on success.
+ *	- -1 on failure.
+ */
+static int dict_onload_func(dl_t const *dl, void *symbol, UNUSED void *user_ctx)
+{
+	fr_dict_t *dict = talloc_get_type_abort(dl->uctx, fr_dict_t);
+	fr_dict_protocol_t const *proto = symbol;
+
+
+	/*
+	 *	Set the protocol-specific callbacks.
+	 */
+	dict->proto = proto;
+
+	/*
+	 *	@todo - just use dict->proto->foo, once we get the
+	 *	rest of the code cleaned up.
+	 */
+#undef COPY
+#define COPY(_x) dict->_x = proto->_x
+	COPY(default_type_size);
+	COPY(default_type_length);
+	COPY(subtype_table);
+	COPY(subtype_table_len);
+
+	return 0;
 }
 
 /** Initialise the global protocol hashes
  *
  * @note Must be called before any other dictionary functions.
  *
- * @param[in] ctx	to allocate protocol hashes in.
+ * @param[in] ctx	to allocate global resources in.
  * @param[in] dict_dir	the default location for the dictionaries.
  * @return
  *	- 0 on success.
@@ -2383,8 +2480,11 @@ void fr_dict_dump(fr_dict_t *dict)
  */
 int fr_dict_global_init(TALLOC_CTX *ctx, char const *dict_dir)
 {
+	TALLOC_FREE(dict_ctx);
+	dict_ctx = ctx;
+
 	if (!protocol_by_name) {
-		protocol_by_name = fr_hash_table_create(ctx, dict_protocol_name_hash, dict_protocol_name_cmp, NULL);
+		protocol_by_name = fr_hash_table_create(dict_ctx, dict_protocol_name_hash, dict_protocol_name_cmp, NULL);
 		if (!protocol_by_name) {
 			fr_strerror_printf("Failed initializing protocol_by_name hash");
 			return -1;
@@ -2392,7 +2492,7 @@ int fr_dict_global_init(TALLOC_CTX *ctx, char const *dict_dir)
 	}
 
 	if (!protocol_by_num) {
-		protocol_by_num = fr_hash_table_create(ctx, dict_protocol_num_hash, dict_protocol_num_cmp, NULL);
+		protocol_by_num = fr_hash_table_create(dict_ctx, dict_protocol_num_hash, dict_protocol_num_cmp, NULL);
 		if (!protocol_by_num) {
 			fr_strerror_printf("Failed initializing protocol_by_num hash");
 			return -1;
@@ -2400,9 +2500,32 @@ int fr_dict_global_init(TALLOC_CTX *ctx, char const *dict_dir)
 	}
 
 	talloc_free(dict_dir_default);		/* Free previous value */
-	dict_dir_default = talloc_strdup(ctx, dict_dir);
+	dict_dir_default = talloc_strdup(dict_ctx, dict_dir);
+
+	dict_loader = dl_loader_init(ctx, NULL, NULL, false, false);
+	if (!dict_loader) return -1;
+
+	if (dl_symbol_init_cb_register(dict_loader, 0, "dict_protocol", dict_onload_func, NULL) < 0) {
+		return -1;
+	}
 
 	dict_initialised = true;
+
+	return 0;
+}
+
+/** Allow the default dict dir to be changed after initialisation
+ *
+ * @param[in] dict_dir	New default dict dir to use.
+ * @return
+ *	- 0 on success.
+ *	- -1 on failure.
+ */
+int fr_dict_dir_set(char const *dict_dir)
+{
+	talloc_free(dict_dir_default);		/* Free previous value */
+	dict_dir_default = talloc_strdup(dict_ctx, dict_dir);
+	if (!dict_dir_default) return -1;
 
 	return 0;
 }
@@ -2508,3 +2631,56 @@ void fr_dict_verify(char const *file, int line, fr_dict_attr_t const *da)
 		if (!fr_cond_assert(0)) fr_exit_now(1);
 	}
 }
+
+/** Iterate over children of a DA.
+ *
+ *  @param[in] parent	the parent da to iterate over
+ *  @param[in,out] prev	pointer to NULL to start, otherwise pointer to the previously returned child
+ *  @return
+ *     - NULL for end of iteration
+ *     - !NULL for a valid child.  This child MUST be passed to the next loop.
+ */
+fr_dict_attr_t const *fr_dict_attr_iterate_children(fr_dict_attr_t const *parent, fr_dict_attr_t const **prev)
+{
+	fr_dict_attr_t const * const *bin;
+	int i, start;
+
+	if (!parent || !parent->children || !prev) return NULL;
+
+	if (!*prev) {
+		start = 0;
+
+	} else if ((*prev)->next) {
+		/*
+		 *	There are more children in this bin, return
+		 *	the next one.
+		 */
+		return (*prev)->next;
+
+	} else {
+		/*
+		 *	Figure out which bin we were in.  If it was
+		 *	the last one, we're done.
+		 */
+		start = (*prev)->attr & 0xff;
+		if (start == 255) return NULL;
+
+		/*
+		 *	Start at the next bin.
+		 */
+		start++;
+	}
+
+	/*
+	 *	Look for a non-empty bin, and return the first child
+	 *	from there.
+	 */
+	for (i = start; i < 256; i++) {
+		bin = &parent->children[i & 0xff];
+
+		if (*bin) return *bin;
+	}
+
+	return NULL;
+}
+

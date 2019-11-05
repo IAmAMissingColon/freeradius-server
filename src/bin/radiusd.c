@@ -29,17 +29,21 @@
  */
 RCSID("$Id$")
 
+#include <freeradius-devel/server/base.h>
+#include <freeradius-devel/server/dependency.h>
 #include <freeradius-devel/server/map_proc.h>
 #include <freeradius-devel/server/module.h>
 #include <freeradius-devel/server/rad_assert.h>
 #include <freeradius-devel/server/radmin.h>
 #include <freeradius-devel/server/state.h>
+#include <freeradius-devel/server/virtual_servers.h>
 
 #include <freeradius-devel/tls/base.h>
 
 #include <freeradius-devel/unlang/base.h>
 
 #include <freeradius-devel/util/misc.h>
+#include <freeradius-devel/util/syserror.h>
 
 #include <ctype.h>
 #include <fcntl.h>
@@ -146,6 +150,17 @@ do { \
 	goto cleanup; \
 } while (0)
 
+static fr_event_timer_t const *fr_time_sync_ev = NULL;
+
+static void fr_time_sync_event(fr_event_list_t *el, UNUSED fr_time_t now, UNUSED void *uctx)
+{
+	fr_time_delta_t when = NSEC;
+
+	(void) fr_event_timer_in(el, el, &fr_time_sync_ev, when, fr_time_sync_event, NULL);
+	(void) fr_time_sync();
+}
+
+
 /*
  *	The main guy.
  */
@@ -170,6 +185,7 @@ int main(int argc, char *argv[])
 	void		*pool_page_start = NULL, *pool_page_end = NULL;
 	bool		do_mprotect;
 	dl_module_loader_t *dl_modules = NULL;
+	bool		sync_time = true;
 
 	/*
 	 *	Setup talloc callbacks so we get useful errors
@@ -266,6 +282,7 @@ int main(int argc, char *argv[])
 	 */
 	default_log.dst = L_DST_NULL;
 	default_log.fd = -1;
+	default_log.print_level = true;
 
 	/*
 	 *  Set the panic action and enable other debugging facilities
@@ -367,6 +384,7 @@ int main(int argc, char *argv[])
 			break;
 
 		case 'X':
+			sync_time = false;
 			config->spawn_workers = false;
 			config->daemonize = false;
 			fr_debug_lvl += 2;
@@ -846,6 +864,15 @@ int main(int argc, char *argv[])
 		}
 		DEBUG("Global memory protected");
 	}
+
+	/*
+	 *	Sync timers normally, but not when running with
+	 *	`radiusd -X`. For debug mode, we don't really care if
+	 *	the times are off a little bit.  And skipping this
+	 *	timer means that we don't pollute the debug output
+	 *	with lots of "waking up in 1s".
+	 */
+	if (sync_time) fr_time_sync_event(main_loop_event_list(), fr_time(), NULL);
 
 	/*
 	 *  Process requests until HUP or exit.

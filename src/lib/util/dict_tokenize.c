@@ -269,25 +269,29 @@ static int dict_process_flag_field(dict_tokenize_ctx_t *ctx, char *name, fr_type
 		/*
 		 *	Search for the first '=' or ','
 		 */
-		for (value = p + 1; *value && (*value != '=') && (*value != ','); value++) {
+		for (next = p + 1; *next && (*next != '=') && (*next != ','); next++) {
 			/* do nothing */
 		}
 
 		/*
 		 *	We have a value, zero out the '=' and point to the value.
 		 */
-		if (*value == '=') {
-			*(value++) = '\0';
+		if (*next == '=') {
+			*(next++) = '\0';
+			value = next;
+
 			if (!*value || (*value == ',')) {
 				fr_strerror_printf("Missing value after '%s='", key);
 				return -1;
 			}
+		} else {
+			value = NULL;
 		}
 
 		/*
 		 *	Skip any trailing text in the value.
 		 */
-		for (next = value; *next; next++) {
+		for (/* nothing */; *next; next++) {
 			if (*next == ',') {
 				*(next++) = '\0';
 				break;
@@ -306,18 +310,6 @@ static int dict_process_flag_field(dict_tokenize_ctx_t *ctx, char *name, fr_type
 			}
 
 			flags->has_tag = 1;
-
-			/*
-			 *	Encryption method.
-			 */
-		} else if (strcmp(key, "encrypt") == 0) {
-			char *qq;
-
-			flags->encrypt = strtol(value, &qq, 0);
-			if (*qq) {
-				fr_strerror_printf("Invalid encrypt value \"%s\"", value);
-				return -1;
-			}
 
 			/*
 			 *	Marks the attribute up as internal.
@@ -342,13 +334,6 @@ static int dict_process_flag_field(dict_tokenize_ctx_t *ctx, char *name, fr_type
 		} else if (strcmp(key, "virtual") == 0) {
 			flags->virtual = 1;
 
-		} else if (strcmp(key, "long") == 0) {
-			if (type != FR_TYPE_EXTENDED) {
-				fr_strerror_printf("The 'long' flag can only be used for attributes of type 'extended'");
-				return -1;
-			}
-			flags->extra = 1;
-
 		} else if (strcmp(key, "key") == 0) {
 			if ((type != FR_TYPE_UINT8) && (type != FR_TYPE_UINT16) && (type != FR_TYPE_UINT32)) {
 				fr_strerror_printf("The 'key' flag can only be used for attributes of type 'uint8', 'uint16', or 'uint32'");
@@ -356,8 +341,22 @@ static int dict_process_flag_field(dict_tokenize_ctx_t *ctx, char *name, fr_type
 			}
 
 			flags->extra = 1;
+			flags->subtype = FLAG_KEY_FIELD;
 
-		} else if (type == FR_TYPE_DATE) {
+		} else if (strcmp(key, "length") == 0) {
+			if (!value || (strcmp(value, "uint16") != 0)) {
+				fr_strerror_printf("The 'length' flag can only be used with value 'uint16'");
+			}
+
+			if ((type != FR_TYPE_STRING) && (type != FR_TYPE_OCTETS) && (type != FR_TYPE_UINT32)) {
+				fr_strerror_printf("The 'length' flag can only be used for attributes of type 'string' or 'octets'");
+				return -1;
+			}
+
+			flags->extra = 1;
+			flags->subtype = FLAG_LENGTH_UINT16;
+
+		} else if ((type == FR_TYPE_DATE) || (type == FR_TYPE_TIME_DELTA)) {
 			flags->length = 4;
 			flags->type_size = FR_TIME_RES_SEC;
 
@@ -367,7 +366,9 @@ static int dict_process_flag_field(dict_tokenize_ctx_t *ctx, char *name, fr_type
 				subtype = fr_table_value_by_str(fr_value_box_type_table, name, FR_TYPE_INVALID);
 				if (subtype == FR_TYPE_INVALID) {
 				unknown_type:
-					fr_strerror_printf("Unknown or unsupported date type '%s'", key);
+					fr_strerror_printf("Unknown or unsupported %s type '%s'",
+							   fr_table_str_by_value(fr_value_box_type_table, type, "<UNKNOWN>"),
+							   key);
 					return -1;
 				}
 
@@ -375,13 +376,25 @@ static int dict_process_flag_field(dict_tokenize_ctx_t *ctx, char *name, fr_type
 					default:
 						goto unknown_type;
 
+				case FR_TYPE_INT16:
+					if (type == FR_TYPE_DATE) goto unknown_type;
+					/* FALL-THROUGH */
+
 				case FR_TYPE_UINT16:
 					flags->length = 2;
 					break;
 
+				case FR_TYPE_INT32:
+					if (type == FR_TYPE_DATE) goto unknown_type;
+					/* FALL-THROUGH */
+
 				case FR_TYPE_UINT32:
 					flags->length = 4;
 					break;
+
+				case FR_TYPE_INT64:
+					if (type == FR_TYPE_DATE) goto unknown_type;
+					/* FALL-THROUGH */
 
 				case FR_TYPE_UINT64:
 					flags->length = 8;
@@ -392,7 +405,9 @@ static int dict_process_flag_field(dict_tokenize_ctx_t *ctx, char *name, fr_type
 
 				precision = fr_table_value_by_str(date_precision_table, key, -1);
 				if (precision < 0) {
-					fr_strerror_printf("Unknown date precision '%s'", key);
+					fr_strerror_printf("Unknown %s precision '%s'",
+							   fr_table_str_by_value(fr_value_box_type_table, type, "<UNKNOWN>"),
+							   key);
 					return -1;
 				}
 				flags->type_size = precision;
@@ -406,7 +421,18 @@ static int dict_process_flag_field(dict_tokenize_ctx_t *ctx, char *name, fr_type
 
 			*ref = talloc_strdup(ctx->dict->pool, value);
 
+		} else if (ctx->dict->subtype_table) {
+			int subtype;
+
+			if (value) value[-1] = '='; /* hackity hack */
+
+			subtype = fr_table_value_by_str(ctx->dict->subtype_table, key, -1);
+			if (subtype < 0) goto unknown_option;
+
+			flags->subtype = subtype;
+
 		} else {
+		unknown_option:
 			fr_strerror_printf("Unknown option '%s'", key);
 			return -1;
 		}
@@ -423,7 +449,7 @@ static int dict_process_flag_field(dict_tokenize_ctx_t *ctx, char *name, fr_type
 
 static int dict_ctx_push(dict_tokenize_ctx_t *ctx, fr_dict_attr_t const *da)
 {
-	if (ctx->stack_depth >= MAX_STACK) {
+	if ((ctx->stack_depth + 1) >= MAX_STACK) {
 		fr_strerror_printf_push("Attribute definitions are nested too deep.");
 		return -1;
 	}
@@ -554,6 +580,14 @@ static int dict_read_process_attribute(dict_tokenize_ctx_t *ctx, char **argv, in
 #ifdef __clang_analyzer__
 	if (!ctx->dict) return -1;
 #endif
+
+	/*
+	 *	Dynamically define where VSAs go.  Note that we CANNOT
+	 *	define VSAs until we define an attribute of type VSA!
+	 */
+	if ((type == FR_TYPE_VSA) && (parent->flags.is_root)) {
+		ctx->dict->vsa_parent = attr;
+	}
 
 	/*
 	 *	Add in an attribute
@@ -898,18 +932,21 @@ static int dict_read_process_flags(UNUSED fr_dict_t *dict, char **argv, int argc
 }
 
 
-/** Process a STRUCT
+/** Process a STRUCT name attr value
+ *
+ * Define struct 'name' when key 'attr' has 'value'.
  *
  *  Which MUST be a sub-structure of another struct
  */
 static int dict_read_process_struct(dict_tokenize_ctx_t *ctx, char **argv, int argc)
 {
-	fr_dict_attr_t			*da, *mutable;
-	fr_dict_attr_t const		*parent, *previous;
+	fr_dict_attr_t const   		*da;
+	fr_dict_attr_t const		*parent;
 	fr_value_box_t			value;
 	fr_type_t			type;
 	unsigned int			attr;
 	fr_dict_attr_flags_t		flags;
+	char				*key_attr = argv[1];
 
 	if (argc != 3) {
 		fr_strerror_printf("Invalid STRUCT syntax");
@@ -919,14 +956,14 @@ static int dict_read_process_struct(dict_tokenize_ctx_t *ctx, char **argv, int a
 	/*
 	 *	This SHOULD be the "key" field.
 	 */
-	parent = fr_dict_attr_by_name(ctx->dict, argv[0]);
+	parent = fr_dict_attr_by_name(ctx->dict, key_attr);
 	if (!parent) {
-		fr_strerror_printf("Unknown attribute '%s'", argv[0]);
+		fr_strerror_printf("Unknown attribute '%s'", key_attr);
 		return -1;
 	}
 
-	if (!parent->flags.extra) {
-		fr_strerror_printf("Attribute '%s' is not a 'key' attribute", argv[0]);
+	if (!da_is_key_field(parent)) {
+		fr_strerror_printf("Attribute '%s' is not a 'key' attribute", key_attr);
 		return -1;
 	}
 
@@ -938,55 +975,59 @@ static int dict_read_process_struct(dict_tokenize_ctx_t *ctx, char **argv, int a
 
 	/*
 	 *	The attribute in the current stack frame is NOT the
-	 *	enclosing "struct": unwind until we do find the parent.
+	 *	enclosing "struct": unwind until we do find the
+	 *	parent, OR until we hit the root of the dictionary.
 	 */
-	if (ctx->stack[ctx->stack_depth].da != parent->parent) {
+	if ((ctx->stack_depth > 1) && (ctx->stack[ctx->stack_depth].da != parent->parent)) {
 		int i;
+		bool found = false;
 
 		for (i = ctx->stack_depth - 1; i > 0; i--) {
-			if (ctx->stack[i].da == parent->parent) {
+			if ((ctx->stack[i].da == parent->parent) ||
+			    (ctx->stack[i].da->flags.is_root)) {
 				ctx->stack_depth = i;
+				found = true;
 				break;
 			}
 		}
+
+		if (!found) {
+			fr_strerror_printf("Invalid STRUCT definition, unknown key attribute %s",
+					   parent->name);
+			return -1;
+		}
 	}
+
+	/*
+	 *	Allow naked "STRUCT parent name value" definitions, so
+	 *	long as the parent attribute exits.
+	 */
+	if (ctx->stack[ctx->stack_depth].da->flags.is_root) goto get_value;
 
 	/*
 	 *	The attribute in the current stack frame MUST be the
 	 *	enclosing "struct".
 	 */
 	if (ctx->stack[ctx->stack_depth].da != parent->parent) {
-		fr_strerror_printf("Attribute '%s' is not a MEMBER of the current 'struct'", argv[0]);
+		fr_strerror_printf("Attribute '%s' is not a MEMBER of the current 'struct'", key_attr);
 		return -1;
 	}
 
-	/*
-	 *	Check that the previous attribute exists, and is NOT a
-	 *	variable-length type.
-	 */
-	previous = fr_dict_attr_child_by_num(ctx->stack[ctx->stack_depth].da, ctx->stack[ctx->stack_depth].member_num);
-	if (!previous) return -1;	/* should never happen */
-
-	switch (previous->type) {
-	case FR_TYPE_FIXED_SIZE:
-		break;
-
-		/*
-		 *	Fixed-size "octets" types are OK.
-		 */
-	case FR_TYPE_OCTETS:
-		if (previous->flags.length != 0) break;
-		/* FALL-THROUGH */
-
-	default:
-		fr_strerror_printf("STRUCT attribute '%s' cannot follow a variable-sized previous MEMBER attribute '%s'",
-				   argv[0], previous->name);
-		return -1;
-	}
-
+get_value:
 	/*
 	 *	A STRUCT also defines a VALUE
+	 *
+	 *	Note that VALUEs are define in the *opposite* order of
+	 *	STRUCT:
+	 *
+	 *	VALUE attr name value
+	 *
+	 *	So to keep the "process value" function happy, we swap
+	 *	the order of the arguments.
 	 */
+	argv[1] = argv[0];
+	argv[0] = key_attr;
+
 	if (dict_read_process_value(ctx, argv, argc) < 0) return -1;
 
 	/*
@@ -1012,24 +1053,21 @@ static int dict_read_process_struct(dict_tokenize_ctx_t *ctx, char **argv, int a
 		break;
 
 	default:
-		fr_strerror_printf("Invalid data type in attribute '%s'", argv[0]);
+		fr_strerror_printf("Invalid data type in attribute '%s'", key_attr);
 		fr_value_box_clear(&value);
 		return -1;
 	}
 	fr_value_box_clear(&value);
 
 	memset(&flags, 0, sizeof(flags));
-	da = dict_attr_alloc(ctx->dict->pool, parent, argv[1], attr, FR_TYPE_STRUCT, &flags);
-	if (!da) {
-		fr_strerror_printf("Failed allocating memory for STRUCT");
-		return -1;
-	}
 
-	memcpy(&mutable, &parent, sizeof(parent)); /* const issues */
-	if (dict_attr_child_add(mutable, da) < 0) {
-		talloc_free(da);
-		return -1;
-	}
+	/*
+	 *	Add the keyed STRUCT to the global namespace, and as a child of "parent".
+	 */
+	if (fr_dict_attr_add(ctx->dict, parent, argv[1], attr, FR_TYPE_STRUCT, &flags) < 0) return -1;
+
+	da = fr_dict_attr_by_name(ctx->dict, argv[1]);
+	if (!da) return -1;
 
 	/*
 	 *	A STRUCT definition is an implicit BEGIN-STRUCT.
@@ -1113,7 +1151,7 @@ static int dict_read_parse_format(char const *format, unsigned int *pvalue, int 
 static int dict_read_process_protocol(char **argv, int argc)
 {
 	unsigned int	value;
-	unsigned int	type_size = 1;
+	unsigned int	type_size = 0;
 	fr_dict_t	*dict;
 	fr_dict_attr_t	*mutable;
 
@@ -1131,7 +1169,7 @@ static int dict_read_process_protocol(char **argv, int argc)
 	}
 
 	/*
-	 *	255 protocolss FR_TYPE_GROUP type_size hack
+	 *	255 protocols FR_TYPE_GROUP type_size hack
 	 */
 	if ((value == 0) || (value > 255)) {
 		fr_strerror_printf("Invalid value '%u' following PROTOCOL", value);
@@ -1190,7 +1228,7 @@ static int dict_read_process_protocol(char **argv, int argc)
 	 *	And check types no matter what.
 	 */
 	if (dict) {
-		if (dict->root->flags.type_size != type_size) {
+		if (type_size && (dict->root->flags.type_size != type_size)) {
 			fr_strerror_printf("Conflicting flags for PROTOCOL \"%s\" (current %d versus new %d)",
 					   dict->root->name, dict->root->flags.type_size, type_size);
 			return -1;
@@ -1201,14 +1239,31 @@ static int dict_read_process_protocol(char **argv, int argc)
 	dict = dict_alloc(NULL);
 
 	/*
+	 *	Try to load protocol-specific validation routines.
+	 *	Some protocols don't need them, so it's OK if the
+	 *	validation routines don't exist.
+	 */
+	if (dict_dlopen(dict, argv[0]) < 0) {
+		talloc_free(dict);
+		return -1;
+	}
+
+	/*
 	 *	Set the root attribute with the protocol name
 	 */
 	dict_root_set(dict, argv[0], value);
 
-	memcpy(&mutable, &dict->root, sizeof(mutable));
-	mutable->flags.type_size = type_size;
-
 	if (dict_protocol_add(dict) < 0) return -1;
+
+	memcpy(&mutable, &dict->root, sizeof(mutable));
+
+	if (!type_size) {
+		mutable->flags.type_size = dict->default_type_size;
+		mutable->flags.length = dict->default_type_length;
+	} else {
+		mutable->flags.type_size = type_size;
+		mutable->flags.length = 1; /* who knows... */
+	}
 
 	return 0;
 }
@@ -1437,7 +1492,7 @@ static int fr_dict_finalise(dict_tokenize_ctx_t *ctx)
 			this->da->dict = dict;
 			this->da->ref = da;
 
-			next = this->next;;
+			next = this->next;
 		}
 	}
 
@@ -1970,10 +2025,10 @@ static int _dict_from_file(dict_tokenize_ctx_t *ctx,
 			/*
 			 *	Check for extended attr VSAs
 			 *
-			 *	BEGIN-VENDOR foo format=Foo-Encapsulation-Attr
+			 *	BEGIN-VENDOR foo parent=Foo-Encapsulation-Attr
 			 */
 			if (argc > 2) {
-				if (strncmp(argv[2], "format=", 7) != 0) {
+				if (strncmp(argv[2], "parent=", 7) != 0) {
 					fr_strerror_printf_push("Invalid format %s", argv[2]);
 					goto error;
 				}
@@ -1982,12 +2037,12 @@ static int _dict_from_file(dict_tokenize_ctx_t *ctx,
 				da = fr_dict_attr_by_name(ctx->dict, p);
 				if (!da) {
 					fr_strerror_printf_push("Invalid format for BEGIN-VENDOR: Unknown "
-								"attribute '%s'", p);
+								"parent attribute '%s'", p);
 					goto error;
 				}
 
 				if (da->type != FR_TYPE_VSA) {
-					fr_strerror_printf_push("Invalid format for BEGIN-VENDOR.  "
+					fr_strerror_printf_push("Invalid parent for BEGIN-VENDOR.  "
 								"Attribute '%s' should be 'vsa' but is '%s'", p,
 								fr_table_str_by_value(fr_value_box_type_table, da->type, "?Unknown?"));
 					goto error;
@@ -2001,31 +2056,21 @@ static int _dict_from_file(dict_tokenize_ctx_t *ctx,
 				}
 
 				vsa_da = da;
+
+			} else if (!ctx->dict->vsa_parent) {
+				fr_strerror_printf_push("BEGIN-VENDOR is forbidden for protocol %s",
+							ctx->dict->root->name);
+				goto error;
+
 			} else {
 				/*
-				 *	Automagically create Attribute 26
-				 *
-				 *	This should exist, but in case we're starting without
-				 *	the RFC dictionaries we need to add it in the case
-				 *	it doesn't.
+				 *	Check that the protocol-specific VSA parent exists.
 				 */
-				vsa_da = fr_dict_attr_child_by_num(ctx->stack[ctx->stack_depth].da, FR_VENDOR_SPECIFIC);
+				vsa_da = fr_dict_attr_child_by_num(ctx->stack[ctx->stack_depth].da, ctx->dict->vsa_parent);
 				if (!vsa_da) {
-					memset(&flags, 0, sizeof(flags));
-
-					if (fr_dict_attr_add(ctx->dict, ctx->stack[ctx->stack_depth].da, "Vendor-Specific",
-							     FR_VENDOR_SPECIFIC, FR_TYPE_VSA, &flags) < 0) {
-						fr_strerror_printf_push("Failed adding Vendor-Specific for Vendor %s",
-									vendor->name);
-						goto error;
-					}
-
-					vsa_da = fr_dict_attr_child_by_num(ctx->stack[ctx->stack_depth].da, FR_VENDOR_SPECIFIC);
-					if (!vsa_da) {
-						fr_strerror_printf_push("Failed finding Vendor-Specific for Vendor %s",
-									vendor->name);
-						goto error;
-					}
+					fr_strerror_printf_push("Failed finding VSA parent for Vendor %s",
+								vendor->name);
+					goto error;
 				}
 			}
 
@@ -2037,24 +2082,24 @@ static int _dict_from_file(dict_tokenize_ctx_t *ctx,
 			if (!vendor_da) {
 				memset(&flags, 0, sizeof(flags));
 
-				/*
-				 *	Default to 1,1
-				 */
-				flags.type_size = 1;
-				flags.length = 1;
+				flags.type_size = ctx->dict->default_type_size;
+				flags.length = ctx->dict->default_type_length;
 
+				/*
+				 *	See if this vendor has
+				 *	specific sizes for type /
+				 *	length.
+				 *
+				 *	@todo - Make this more protocol agnostic!
+				 */
 				if ((vsa_da->type == FR_TYPE_VSA) &&
-				    (vsa_da->parent->type != FR_TYPE_EXTENDED)) {
+				    (vsa_da->parent->flags.is_root)) {
 					fr_dict_vendor_t const *dv;
 
 					dv = fr_dict_vendor_by_num(ctx->dict, vendor->pen);
 					if (dv) {
 						flags.type_size = dv->type;
 						flags.length = dv->length;
-
-					} else { /* unknown vendor, shouldn't happen */
-						flags.type_size = 1;
-						flags.length = 1;
 					}
 				}
 
@@ -2361,7 +2406,7 @@ int fr_dict_read(fr_dict_t *dict, char const *dir, char const *filename)
 	INTERNAL_IF_NULL(dict, -1);
 
 	if (!dict->attributes_by_name) {
-		fr_strerror_printf("%s: Must call fr_dict_internal_afrom_file() before fr_dict_read()", __FUNCTION__);
+		fr_strerror_printf("%s: Must initialise dictionary before calling fr_dict_read()", __FUNCTION__);
 		return -1;
 	}
 

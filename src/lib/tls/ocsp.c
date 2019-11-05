@@ -30,6 +30,7 @@ USES_APPLE_DEPRECATED_API	/* OpenSSL API has been deprecated by Apple */
 #define LOG_PREFIX "tls - ocsp - "
 
 #include <freeradius-devel/server/module.h>
+#include <freeradius-devel/server/pair.h>
 #include <freeradius-devel/server/rad_assert.h>
 
 #include <freeradius-devel/util/misc.h>
@@ -180,8 +181,10 @@ int tls_ocsp_staple_cb(SSL *ssl, void *data)
 
 	X509			*cert;
 	X509			*issuer_cert;
-	X509_STORE		*server_store;
+	X509_STORE		*server_store = NULL;
 	X509_STORE_CTX		*server_store_ctx = NULL;
+
+	STACK_OF(X509)		*our_chain = NULL;
 
 	int			ret;
 
@@ -190,40 +193,115 @@ int tls_ocsp_staple_cb(SSL *ssl, void *data)
 		tls_log_error(request, "No server certificate found in SSL session");
 	error:
 		X509_STORE_CTX_free(server_store_ctx);
+		X509_STORE_free(server_store);
+
 		return conf->softfail ? SSL_TLSEXT_ERR_NOACK : SSL_TLSEXT_ERR_ALERT_FATAL;
 	}
 
-	/*
-	 *	OpenSSL people appear to have removed SSL_get_cert_store.
-	 *
-	 *	So if we dynamically set the server cert at runtime, we
-	 *	don't have access to the chain.
-	 */
 	server_store = SSL_CTX_get_cert_store(SSL_get_SSL_CTX(ssl));
 	if (!server_store) {
 		tls_log_error(request, "Failed retrieving SSL session cert store");
 		goto error;
 	}
 
-	MEM(server_store_ctx = X509_STORE_CTX_new());	/* Die if OOM */
+#if OPENSSL_VERSION_NUMBER >= 0x10102000L
+	if (SSL_get0_chain_certs(ssl, &our_chain) == 0) {
+#else
+	/*
+	 *	Ignore the return code for older versions of
+	 *	OpenSSL.
+	 *
+	 *	https://github.com/openssl/openssl/pull/9395
+	 */
+	(void)SSL_get0_chain_certs(ssl, &our_chain);
+	if (!our_chain) {
+#endif
+		tls_log_error(request, "Failed retrieving chain certificates from current SSL session");
+		goto error;
+	}
+
+	/*
+	 *	Print out the current chain in the certificate store
+	 *	to help with debugging issues where we can't find the
+	 *	server cert's issuer.
+	 */
+	if (RDEBUG_ENABLED3) {
+		RDEBUG3("Current SSL session cert store contents");
+		RINDENT();
+		tls_log_certificate_chain(request, our_chain, cert);
+		REXDENT();
+	}
+
+	MEM(server_store = X509_STORE_new());
+	X509_STORE_set_trust(server_store, 1);	/* All certs are trusted */
+
+	/*
+	 *	Add the chain certificates from the current SSL*
+	 *	to the trusted store so that we can determine
+	 *	the issuer cert of the certificate we presented.
+	 */
+	{
+		int num = sk_X509_num(our_chain);
+		int i;
+
+		for (i = 0; i < num; i++) {
+			if (X509_STORE_add_cert(server_store, sk_X509_value(our_chain, i)) != 1) {
+				tls_log_error(request, "Failed adding certificate to trusted store");
+				goto error;
+			}
+		}
+	}
 
 	/*
 	 *	This is what OpenSSL uses to construct SSL chains
 	 *	for validation.  We just need to use it to find
 	 *	who issued our server certificate.
-	 *
-	 *	This isn't what we pass to tls_ocsp_check.  That store
-	 *	is used to validate the OCSP server's response.
 	 */
+	MEM(server_store_ctx = X509_STORE_CTX_new());
 	if (X509_STORE_CTX_init(server_store_ctx, server_store, NULL, NULL) == 0) {
 		tls_log_error(request, "Failed initialising SSL session cert store ctx");
 		goto error;
 	}
 
-	if ((X509_STORE_CTX_get1_issuer(&issuer_cert, server_store_ctx, cert) != 1) || !issuer_cert) {
-		tls_log_error(request, "Can't get server certificate's issuer");
+	ret = X509_STORE_CTX_get1_issuer(&issuer_cert, server_store_ctx, cert);
+	if (ret != 1) {
+		X509_NAME	*subject;
+		X509_NAME	*issuer;
+		char		*subject_str;
+		char		*issuer_str;
+
+ 		subject = X509_get_subject_name(cert);
+		if (!subject) {
+			tls_log_error(request, "Couldn't retrieve subject name of SSL session cert");
+			goto error;
+		}
+		MEM(subject_str = X509_NAME_oneline(subject, NULL, 0));
+
+		issuer = X509_get_issuer_name(cert);
+		if (!issuer) {
+			tls_log_error(request, "Couldn't retrieve issuer name of SSL session cert");
+			OPENSSL_free(subject_str);
+			goto error;
+		}
+		MEM(issuer_str = X509_NAME_oneline(issuer, NULL, 0));
+
+		switch (ret) {
+		case 0:
+			tls_log_error(request, "Issuer \"%s\" of \"%s\" not found in certificate store",
+				      issuer_str, subject_str);
+			break;
+		default:
+			tls_log_error(request, "Error retrieving issuer \"%s\" of \"%s\" from certificate store",
+				      issuer_str, subject_str);
+			break;
+		}
+
+		OPENSSL_free(subject_str);
+		OPENSSL_free(issuer_str);
 		goto error;
 	}
+
+	rad_assert(issuer_cert);
 
 	ret = tls_ocsp_check(request, ssl, server_store, issuer_cert, cert, conf, true);
 	switch (ret) {
@@ -243,6 +321,7 @@ int tls_ocsp_staple_cb(SSL *ssl, void *data)
 
 	X509_free(issuer_cert);	/* Decrement reference count on issuer cert */
 	X509_STORE_CTX_free(server_store_ctx);
+	X509_STORE_free(server_store);
 
 	return ret;
 }

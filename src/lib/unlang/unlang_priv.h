@@ -58,6 +58,7 @@ typedef enum {
 	UNLANG_TYPE_MODULE = 1,			//!< Module method.
 	UNLANG_TYPE_FUNCTION,			//!< Internal call to a function or submodule.
 	UNLANG_TYPE_GROUP,			//!< Grouping section.
+	UNLANG_TYPE_REDUNDANT,			//!< exactly like group, but with different default return codes
 	UNLANG_TYPE_LOAD_BALANCE,		//!< Load balance section.
 	UNLANG_TYPE_REDUNDANT_LOAD_BALANCE,	//!< Redundant load balance section.
 	UNLANG_TYPE_PARALLEL,			//!< execute statements in parallel
@@ -81,7 +82,6 @@ typedef enum {
 	UNLANG_TYPE_POLICY,			//!< Policy section.
 	UNLANG_TYPE_XLAT_INLINE,		//!< xlat statement, inline in "unlang"
 	UNLANG_TYPE_XLAT,			//!< Represents one level of an xlat expansion.
-	UNLANG_TYPE_RESUME,			//!< where to resume processing
 	UNLANG_TYPE_MAX
 } unlang_type_t;
 
@@ -95,14 +95,6 @@ typedef enum {
 	UNLANG_FRAME_ACTION_YIELD		//!< Temporarily return control back to the caller on the C
 						///< stack.
 } unlang_frame_action_t;
-
-typedef enum {
-	UNLANG_GROUP_TYPE_SIMPLE = 0,		//!< Execute each of the children sequentially, until we execute
-						//!< all of the children, or one returns #UNLANG_ACTION_UNWIND.
-	UNLANG_GROUP_TYPE_REDUNDANT,		//!< Execute each of the children until one returns a 'good'
-						//!< result i.e. ok, updated, noop, then break out of the group.
-	UNLANG_GROUP_TYPE_MAX			//!< Number of group types.
-} unlang_group_type_t;
 
 #define UNLANG_NEXT_STOP	(false)
 #define UNLANG_NEXT_SIBLING	(true)
@@ -139,7 +131,6 @@ struct unlang_s {
  */
 typedef struct {
 	unlang_t		self;
-	unlang_group_type_t	group_type;
 	unlang_t		*children;	//!< Children beneath this group.  The body of an if
 						//!< section for example.
 	unlang_t		*tail;		//!< of the children list.
@@ -178,43 +169,6 @@ typedef struct {
 	};
 } unlang_group_t;
 
-/** Pushed onto the interpreter stack by a yielding module, xlat, or keyword to indicate a resumption point
- *
- * Unlike normal coroutines in other languages, we represent resumption points as states in a state
- * machine made up of function pointers.
- *
- * When a module, xlat or keyword yields, it specifies the function to call when whatever
- * condition is required for resumption is satisfied, it also specifies the ctx for that function,
- * which represents the internal state of the module at the time of yielding.
- *
- * Because we occasionally want to cancel requests that are waiting on a resumption condition
- * a signal function may also be specified.  This is provided so that whatever yielded can cancel
- * any pending I/O operations, and cleanup any memory that was temporarily allocated.
- *
- * If you want normal coroutine behaviour... rctx is arbitrary and could include a state enum,
- * in which case the function pointer could be the same as the function that yielded, and something
- * like Duff's device could be used to jump back to the yield point.
- *
- * Yield/resume are left as flexible as possible.  Writing async code this way is difficult enough
- * without being straightjacketed.
- */
-typedef struct {
-	unlang_t		self;
-
-	unlang_t		*parent;			//!< The original instruction.
-
-	void    		*resume;			//!< Function the yielding code indicated should
-								//!< be called when the request could be resumed.
-
-	void			*signal;			//!< Function the yielding code indicated should
-								///< be called if the request is destroyed in
-								///< the middle of an async operation.
-
-	void			*rctx;   			//!< Context data for the resume and signal functions.
-								///< Usually represents the internal state at the
-								///< time of yielding.
-} unlang_resume_t;
-
 /** A naked xlat
  *
  * @note These are vestigial and may be removed in future.
@@ -249,6 +203,9 @@ typedef struct {
 typedef struct {
 	unlang_t		*instruction;			//!< The unlang node we're evaluating.
 	unlang_t		*next;				//!< The next unlang node we will evaluate
+
+	unlang_op_interpret_t	interpret;			//!< function to call for interpreting this stack frame
+	unlang_op_signal_t	signal;				//!< function to call when signalling this stack frame
 
 	/** Stack frame specialisations
 	 *
@@ -290,21 +247,27 @@ typedef struct {
 #define UNWIND_FLAG_BREAK_POINT		0x04			//!< 'break' stops here.
 #define UNWIND_FLAG_RETURN_POINT	0x08      		//!< 'return' stops here.
 #define UNWIND_FLAG_NO_CLEAR		0x10			//!< Keep unwinding, don't clear the unwind flag.
+#define UNWIND_FLAG_YIELDED		0x20			//!< frame has yielded
 
 static inline void repeatable_set(unlang_stack_frame_t *frame)		{ frame->uflags |= UNWIND_FLAG_REPEAT; }
 static inline void top_frame_set(unlang_stack_frame_t *frame) 		{ frame->uflags |= UNWIND_FLAG_TOP_FRAME; }
 static inline void break_point_set(unlang_stack_frame_t *frame)		{ frame->uflags |= UNWIND_FLAG_BREAK_POINT; }
 static inline void return_point_set(unlang_stack_frame_t *frame)	{ frame->uflags |= UNWIND_FLAG_RETURN_POINT; }
+static inline void yielded_set(unlang_stack_frame_t *frame)		{ frame->uflags |= UNWIND_FLAG_YIELDED; }
 
 static inline void repeatable_clear(unlang_stack_frame_t *frame)	{ frame->uflags &= ~UNWIND_FLAG_REPEAT; }
 static inline void top_frame_clear(unlang_stack_frame_t *frame)		{ frame->uflags &= ~UNWIND_FLAG_TOP_FRAME; }
 static inline void break_point_clear(unlang_stack_frame_t *frame)	{ frame->uflags &= ~UNWIND_FLAG_BREAK_POINT; }
 static inline void return_point_clear(unlang_stack_frame_t *frame) 	{ frame->uflags &= ~UNWIND_FLAG_RETURN_POINT; }
+static inline void yielded_clear(unlang_stack_frame_t *frame) 	{ frame->uflags &= ~UNWIND_FLAG_YIELDED; }
 
 static inline bool is_repeatable(unlang_stack_frame_t *frame)		{ return frame->uflags & UNWIND_FLAG_REPEAT; }
 static inline bool is_top_frame(unlang_stack_frame_t *frame)		{ return frame->uflags & UNWIND_FLAG_TOP_FRAME; }
 static inline bool is_break_point(unlang_stack_frame_t *frame)		{ return frame->uflags & UNWIND_FLAG_BREAK_POINT; }
 static inline bool is_return_point(unlang_stack_frame_t *frame) 	{ return frame->uflags & UNWIND_FLAG_RETURN_POINT; }
+static inline bool is_yielded(unlang_stack_frame_t *frame) 		{ return frame->uflags & UNWIND_FLAG_YIELDED; }
+
+static inline bool is_scheduled(REQUEST const *request)			{ return (request->runnable_id >= 0); }
 
 static inline unlang_action_t unwind_to_break(unlang_stack_t *stack)
 {
@@ -359,30 +322,14 @@ static inline unlang_t *unlang_xlat_inline_to_generic(unlang_xlat_inline_t *p)
 {
 	return (unlang_t *)p;
 }
-
-static inline unlang_resume_t *unlang_generic_to_resume(unlang_t *p)
-{
-	rad_assert(p->type == UNLANG_TYPE_RESUME);
-	return talloc_get_type_abort(p, unlang_resume_t);
-}
-
-static inline unlang_t *unlang_resume_to_generic(unlang_resume_t *p)
-{
-	return (unlang_t *)p;
-}
 /* @} **/
 
 /** @name Internal interpreter functions needed by ops
  *
  * @{
  */
-uint64_t	unlang_interpret_active_callers(unlang_t *instruction);
-
-unlang_resume_t *unlang_interpret_resume_alloc(REQUEST *request, void *callback, void *signal, void *rctx);
-
 void		unlang_interpret_push(REQUEST *request, unlang_t *instruction,
 				      rlm_rcode_t default_rcode, bool do_next_sibling, bool top_frame);
-rlm_rcode_t	unlang_interpret_run(REQUEST *request);
 
 int		unlang_op_init(void);
 
@@ -396,7 +343,7 @@ void		unlang_op_free(void);
  *
  * @{
  */
-fr_io_final_t	unlang_io_process_interpret(UNUSED void const *instance, REQUEST *request);
+rlm_rcode_t	unlang_io_process_interpret(UNUSED void const *instance, REQUEST *request);
 
 REQUEST		*unlang_io_subrequest_alloc(REQUEST *parent, fr_dict_t const *namespace, bool detachable);
 

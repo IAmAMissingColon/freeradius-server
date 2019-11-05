@@ -637,6 +637,7 @@ int main(int argc, char *argv[])
 	 */
 	default_log.dst = L_DST_STDOUT;
 	default_log.fd = STDOUT_FILENO;
+	default_log.print_level = true;
 
 	/*  Process the options.  */
 	while ((c = getopt(argc, argv, "d:D:f:hi:mMn:o:O:r:xX")) != -1) {
@@ -688,10 +689,12 @@ int main(int argc, char *argv[])
 
 			case 'X':
 				fr_debug_lvl += 2;
+				default_log.print_level = true;
 				break;
 
 			case 'x':
 				fr_debug_lvl++;
+				if (fr_debug_lvl > 2) default_log.print_level = true;
 				break;
 
 			default:
@@ -1107,16 +1110,16 @@ cleanup:
 	 */
 	trigger_exec_free();
 
+	if (receipt_file && (ret == EXIT_SUCCESS) && (fr_file_touch(NULL, receipt_file, 0644, true, 0755) <= 0)) {
+		fr_perror("unit_test_module");
+		ret = EXIT_FAILURE;
+	}
+
 	/*
 	 *	Explicitly cleanup the buffer used for storing syserror messages
 	 *	This cuts down on address sanitiser output on error.
 	 */
 	fr_syserror_free();
-
-	if (receipt_file && (ret == EXIT_SUCCESS) && (fr_file_touch(receipt_file, 0644) < 0)) {
-		fr_perror("unit_test_module");
-		ret = EXIT_FAILURE;
-	}
 
 	/*
 	 *	Call pthread destructors.  Which aren't normally

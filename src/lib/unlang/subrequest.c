@@ -24,8 +24,22 @@
  */
 RCSID("$Id$")
 
+#include <freeradius-devel/server/state.h>
 #include "unlang_priv.h"
 #include "subrequest_priv.h"
+
+/** Parameters for initialising the subrequest
+ *
+ * State of one level of nesting within an xlat expansion.
+ */
+typedef struct {
+	rlm_rcode_t			*presult;			//!< Where to store the result.
+	REQUEST				*child;				//!< Pre-allocated child request.
+	bool				free_child;			//!< Whether we should free the child after
+									///< it completes.
+	bool				detachable;			//!< Whether the request can be detached.
+	unlang_subrequest_session_t		session;			//!< Session configuration.
+} unlang_frame_state_subrequest_t;
 
 static fr_dict_t *dict_freeradius;
 
@@ -43,13 +57,21 @@ fr_dict_attr_autoload_t subrequest_dict_attr[] = {
 	{ NULL }
 };
 
+typedef struct {
+	rlm_rcode_t	rcode;		//!< frame->result from before detach was called
+} unlang_frame_state_detach_t;
+
 static void unlang_max_request_time(UNUSED fr_event_list_t *el, UNUSED fr_time_t now, void *uctx)
 {
 	REQUEST *request = talloc_get_type_abort(uctx, REQUEST);
 
 	RDEBUG("Reached Request-Lifetime.  Forcibly stopping request");
 
-	if (request->runnable_id >= 0) {
+	/*
+	 *	The request is scheduled and isn't running.  Remove it
+	 *	from the backlog.
+	 */
+	if (is_scheduled(request)) {
 		rad_assert(request->backlog != NULL);
 		(void) fr_heap_extract(request->backlog, request);
 	}
@@ -60,44 +82,124 @@ static void unlang_max_request_time(UNUSED fr_event_list_t *el, UNUSED fr_time_t
 /** Send a signal from parent request to subrequest
  *
  */
-static void unlang_subrequest_signal(UNUSED REQUEST *request, void *ctx, fr_state_signal_t action)
+static void unlang_subrequest_signal(REQUEST *request, fr_state_signal_t action)
 {
-	REQUEST			*child = talloc_get_type_abort(ctx, REQUEST);
+	unlang_stack_t			*stack = request->stack;
+	unlang_stack_frame_t		*frame = &stack->frame[stack->depth];
+	unlang_frame_state_subrequest_t	*state = talloc_get_type_abort(frame->state, unlang_frame_state_subrequest_t);
+	REQUEST				*child = talloc_get_type_abort(state->child, REQUEST);
 
 	unlang_interpret_signal(child, action);
 }
 
 
-/** Resume a subrequest
+/** Process a subrequest until it either detaches, or is done.
  *
  */
-static unlang_action_t unlang_subrequest_resume(REQUEST *request, rlm_rcode_t *presult, void *rctx)
+static unlang_action_t unlang_subrequest_process(REQUEST *request, rlm_rcode_t *presult)
 {
-	REQUEST				*child = talloc_get_type_abort(rctx, REQUEST);
 	unlang_stack_t			*stack = request->stack;
 	unlang_stack_frame_t		*frame = &stack->frame[stack->depth];
-	unlang_t			*instruction = frame->instruction->parent;
 	unlang_frame_state_subrequest_t	*state = talloc_get_type_abort(frame->state, unlang_frame_state_subrequest_t);
+	REQUEST				*child = talloc_get_type_abort(state->child, REQUEST);
 	rlm_rcode_t			rcode;
-#ifndef NDEBUG
-	unlang_resume_t			*mr;
-#endif
 
-	/*
-	 *	Continue running the child.
-	 */
-	rcode = unlang_interpret_run(child);
+	rad_assert(child != NULL);
+
+	rcode = unlang_interpret(child);
 	if (rcode != RLM_MODULE_YIELD) {
-		rad_assert(frame->instruction->type == UNLANG_TYPE_RESUME);
+		if (!fr_cond_assert(rcode < NUM_ELEMENTS(frame->instruction->actions))) return UNLANG_ACTION_STOP_PROCESSING;
+
+		if (state->session.enable) fr_state_store_in_parent(child,
+								    state->session.unique_ptr,
+								    state->session.unique_int);
+
+		if (state->free_child) {
+			unlang_subrequest_free(&child);
+			state->child = NULL;
+			frame->signal = NULL;
+		}
+
+	calculate_result:
+		/*
+		 *	Pass the result back to the module
+		 *	that created the subrequest, or
+		 *	use it to modify the current section
+		 *	rcode.
+		 */
+		if (state->presult) *state->presult = rcode;
 
 		*presult = rcode;
 
-		frame->instruction->type = UNLANG_TYPE_SUBREQUEST; /* for debug purposes */
+		return UNLANG_ACTION_CALCULATE_RESULT;
+	}
 
-		if (!state->persist) {
-			fr_state_store_in_parent(child, instruction, 0);
-			unlang_subrequest_free(&child);
-		}
+	/*
+	 *	The child has yielded, BUT has also detached itself.
+	 *	We know this because it has reached into our state,
+	 *	and removed itself as a child.  We therefore just keep
+	 *	running, and don't return yield.
+	 */
+	if (!state->child) {
+		rcode = RLM_MODULE_NOOP;
+		goto calculate_result;
+	}
+
+	/*
+	 *	Else the child yielded, so we have to yield.  Set up
+	 *	the resume frame and continue.
+	 */
+	return UNLANG_ACTION_YIELD;
+}
+
+
+static unlang_action_t unlang_subrequest_start(REQUEST *request, rlm_rcode_t *presult)
+{
+	unlang_stack_t			*stack = request->stack;
+	unlang_stack_frame_t		*frame = &stack->frame[stack->depth];
+	unlang_frame_state_subrequest_t	*state = talloc_get_type_abort(frame->state, unlang_frame_state_subrequest_t);
+	REQUEST				*child = state->child;
+
+	/*
+	 *	Restore state from the parent to the
+	 *	subrequest.
+	 */
+	if (state->session.enable) fr_state_restore_to_child(child,
+							     state->session.unique_ptr,
+							     state->session.unique_int);
+
+	RDEBUG2("Creating subrequest (%s)", child->name);
+	log_request_pair_list(L_DBG_LVL_1, request, child->packet->vps, NULL);
+
+	frame->interpret = unlang_subrequest_process;
+	return unlang_subrequest_process(request, presult);
+}
+
+
+static unlang_action_t unlang_subrequest_state_init(REQUEST *request, rlm_rcode_t *presult)
+{
+	unlang_stack_t			*stack = request->stack;
+	unlang_stack_frame_t		*frame = &stack->frame[stack->depth];
+	unlang_t			*instruction = frame->instruction;
+	unlang_frame_state_subrequest_t	*state = talloc_get_type_abort(frame->state, unlang_frame_state_subrequest_t);
+	REQUEST				*child;
+
+	rlm_rcode_t			rcode;
+	VALUE_PAIR			*vp;
+	unlang_group_t			*g;
+
+	/*
+	 *	Initialize the state
+	 */
+	g = unlang_generic_to_group(instruction);
+	if (!g->num_children) {
+		*presult = RLM_MODULE_NOOP;
+		return UNLANG_ACTION_CALCULATE_RESULT;
+	}
+
+	child = state->child = unlang_io_subrequest_alloc(request, g->dict, UNLANG_DETACHABLE);
+	if (!child) {
+		rcode = RLM_MODULE_FAIL;
 
 		/*
 		 *	Pass the result back to the module
@@ -105,227 +207,71 @@ static unlang_action_t unlang_subrequest_resume(REQUEST *request, rlm_rcode_t *p
 		 *	use it to modify the current section
 		 *	rcode.
 		 */
-		if (state->presult) {
-			*state->presult = rcode;
-		} else {
-			*presult = rcode;
-		}
+		if (state->presult) *state->presult = rcode;
 
+		*presult = rcode;
 		return UNLANG_ACTION_CALCULATE_RESULT;
 	}
 
-#ifndef NDEBUG
-	rad_assert(frame->instruction->type == UNLANG_TYPE_RESUME);
-
-	mr = unlang_generic_to_resume(frame->instruction);
-	(void) talloc_get_type_abort(mr, unlang_resume_t);
-
-	rad_assert(mr->resume == NULL);
-#endif
+	/*
+	 *	Set the packet type.
+	 *
+	 *	@todo - this doesn't strictly work for DHCP, which
+	 *	uses DHCP-Message-Type, *and* which has message type
+	 *	by a uint8.  We should likely have some other mapping
+	 *	in the dictionary so that we can find the real
+	 *	attribute.
+	 */
+	MEM(vp = fr_pair_afrom_da(child->packet, g->attr_packet_type));
+	child->packet->code = vp->vp_uint32 = g->type_enum->value->vb_uint32;
+	fr_pair_add(&child->packet->vps, vp);
 
 	/*
-	 *	If the child yields, our current frame is still an
-	 *	unlang_resume_t.
+	 *	Push the first instruction the child's
+	 *	going to run.
 	 */
+	unlang_interpret_push(child, g->children, frame->result,
+			      UNLANG_NEXT_SIBLING, UNLANG_TOP_FRAME);
 
-	return UNLANG_ACTION_YIELD;
+	/*
+	 *	Probably not a great idea to set state->presult to
+	 *	presult, as it could be a pointer to an rlm_rcode_t
+	 *	somewhere on the stack which could be invalidated
+	 *	between unlang_subrequest being called and
+	 *	unlang_subrequest_resume being called.
+	 *
+	 *	...so we just set it to NULL and interpret
+	 *	that as use the presult that was passed
+	 *	in to the currently executing function.
+	 */
+	state->presult = NULL;
+	state->free_child = true;
+	state->detachable = true;
+
+	/*
+	 *	Store/restore session information in the subrequest
+	 *	keyed off the exact subrequest keyword.
+	 */
+	state->session.enable = true;
+	state->session.unique_ptr = instruction;
+	state->session.unique_int = 0;
+
+	frame->interpret = unlang_subrequest_start;
+	return unlang_subrequest_start(request, presult);
 }
 
-static unlang_action_t unlang_subrequest(REQUEST *request,
-					 rlm_rcode_t *presult, int *ppriority)
-{
-	unlang_stack_t			*stack = request->stack;
-	unlang_stack_frame_t		*frame = &stack->frame[stack->depth];
-	unlang_t			*instruction = frame->instruction;
-	unlang_frame_state_subrequest_t	*state = NULL;
-	REQUEST				*child;
-
-	rlm_rcode_t			rcode;
-	int				priority;
-	unlang_resume_t			*mr;
-	VALUE_PAIR			*vp;
-
-	if (frame->state) state = talloc_get_type_abort(frame->state, unlang_frame_state_subrequest_t);
-
-	/*
-	 *	When the subrequest is executed as part of an
-	 *	unlang section (i.e. the "subrequest" keyword was used)
-	 *	we won't have a frame->state.
-	 *	In this case we crib most of the necessary
-	 *	configuration for the subrequest from the parent.
-	 *
-	 *	If this function is being called because
-	 *	unlang_interpret_push_subrequest was called, the frame->state
-	 *	should be filled out by unlang_interpret_push_subrequest.
-	 */
-	if (!state) {
-		unlang_group_t		*g;
-
-		g = unlang_generic_to_group(instruction);
-		rad_assert(g->children != NULL);
-
-		frame->state = state = talloc(stack, unlang_frame_state_subrequest_t);
-		child = state->child = unlang_io_subrequest_alloc(request, g->dict, UNLANG_DETACHABLE);
-		if (!child) {
-			rcode = RLM_MODULE_FAIL;
-			priority = instruction->actions[*presult];
-
-		calculate_result:
-			/*
-			 *	Pass the result back to the module
-			 *	that created the subrequest, or
-			 *	use it to modify the current section
-			 *	rcode.
-			 */
-			if (state->presult) {
-				*state->presult = rcode;
-				return UNLANG_ACTION_CALCULATE_RESULT;
-			}
-
-			*presult = rcode;
-			*ppriority = priority;
-
-			return UNLANG_ACTION_CALCULATE_RESULT;
-		}
-
-		/*
-		 *	Set the packet type.
-		 *
-		 *	@todo - this doesn't strictly work for DHCP, which
-		 *	uses DHCP-Message-Type, *and* which has message type
-		 *	by a uint8.  We should likely have some other mapping
-		 *	in the dictionary so that we can find the real
-		 *	attribute.
-		 */
-		MEM(vp = fr_pair_afrom_da(child->packet, g->attr_packet_type));
-		child->packet->code = vp->vp_uint32 = g->type_enum->value->vb_uint32;
-		fr_pair_add(&child->packet->vps, vp);
-
-		/*
-		 *	Push the first instruction the child's
-		 *	going to run.
-		 */
-		unlang_interpret_push(child, g->children, frame->result,
-				      UNLANG_NEXT_SIBLING, UNLANG_TOP_FRAME);
-
-		/*
-		 *	Probably not a great idea to set this
-		 *	to presult, as it could be a pointer
-		 *	to an rlm_rcode_t somewhere on the stack
-		 *      which could be invalidated between
-		 *	unlang_subrequest being called
-		 *	and unlang_subrequest_resume being called.
-		 *
-		 *	...so we just set it to NULL and interpret
-		 *	that as use the presult that was passed
-		 *	in to the currently executing function.
-		 */
-		state->presult = NULL;
-		state->persist = false;
-
-		/*
-		 *	Restore state from the parent to the
-		 *	subrequest.
-		 *	This is necessary for stateful modules like
-		 *	EAP to work.
-		 */
-		fr_state_restore_to_child(child, instruction, 0);
-	} else {
-		child = state->child;
-	}
-
-	RDEBUG2("Creating subrequest (%s)", child->name);
-	log_request_pair_list(L_DBG_LVL_1, request, child->packet->vps, NULL);
-
-	rcode = unlang_interpret_run(child);
-	if (rcode != RLM_MODULE_YIELD) {
-		if (!state->persist) {
-			fr_state_store_in_parent(child, instruction, 0);
-			unlang_subrequest_free(&child);
-		}
-
-		priority = instruction->actions[rcode];
-
-		goto calculate_result;
-	}
-
-	/*
-	 *	As a special case, if the child instruction is
-	 *	"detach", detach the child, insert the child into the
-	 *	runnable queue, and keep going with the parent.
-	 *
-	 *	The unlang_detach() interpreter function takes care of
-	 *	calling request_detach() for the child.
-	 */
-	{
-		unlang_stack_t		*child_stack = child->stack;
-		unlang_stack_frame_t	*child_frame = &child_stack->frame[child_stack->depth];
-		unlang_t		*child_instruction = child_frame->instruction;
-
-		if (child_instruction->type == UNLANG_TYPE_DETACH) {
-			rad_assert(child->backlog != NULL);
-
-			if (fr_heap_insert(child->backlog, child) < 0) {
-				RPERROR("Failed inserting child into backlog");
-				return UNLANG_ACTION_STOP_PROCESSING;
-			}
-
-			RDEBUG2("Detaching child request (%s)", child->name);
-
-			/*
-			 *	Tell the interpreter to skip the "detach"
-			 *	stack frame when it continues.
-			 */
-			child_frame->instruction = child_frame->next;
-			if (child_frame->instruction) child_frame->next = child_frame->instruction->next;
-
-			rcode = RLM_MODULE_NOOP;
-			priority = 0;
-
-			goto calculate_result;
-		} /* else the child yielded, so we have to yield */
-	}
-
-	/*
-	 *	Create the "resume" stack frame, and have it replace our stack frame.
-	 */
-	mr = unlang_interpret_resume_alloc(request, NULL, NULL, child);
-	if (!mr) {
-		rcode = RLM_MODULE_FAIL;
-		priority = instruction->actions[rcode];
-		goto calculate_result;
-	}
-
-	*presult = RLM_MODULE_YIELD;
-	return UNLANG_ACTION_YIELD;
-}
-
-unlang_action_t unlang_detach(REQUEST *request,
-				     rlm_rcode_t *presult, int *priority)
+/** Initialize a detached child
+ *
+ *  Detach it from the parent, set up it's lifetime, and mark it as
+ *  runnable.
+ */
+int unlang_detached_child_init(REQUEST *request)
 {
 	VALUE_PAIR		*vp;
-	unlang_stack_t		*stack = request->stack;
-	unlang_stack_frame_t	*frame = &stack->frame[stack->depth];
-	unlang_t		*instruction = frame->instruction;
-
-	/*
-	 *	The "parallel" command calls us in order to detach a
-	 *	child which hasn't done anything yet.
-	 *
-	 *	Therefore, we print out the "detach" keyword ONLY when
-	 *	it's running with a parent stack frame.
-	 */
-	if (stack->depth > 1) {
-		RDEBUG2("%s", unlang_ops[instruction->type].name);
-	}
-
-	rad_assert(request->parent != NULL);
 
 	if (request_detach(request, false) < 0) {
 		ERROR("Failed detaching child");
-		*presult = RLM_MODULE_FAIL;
-		*priority = 0;
-		return UNLANG_ACTION_CALCULATE_RESULT;
+		return -1;
 	}
 
 	/*
@@ -358,11 +304,80 @@ unlang_action_t unlang_detach(REQUEST *request,
 	}
 
 	/*
-	 *	request_detach() sets the backlog
+	 *	Mark the child as runnable.
 	 */
-	rad_assert(request->backlog != NULL);
+	rad_assert(request->parent == NULL);
+	if (fr_heap_insert(request->backlog, request) < 0) {
+		RPERROR("Failed inserting ourself into the backlog.");
+		return -1;
+	}
 
-	*presult = RLM_MODULE_YIELD;
+	return 0;
+}
+
+static unlang_action_t unlang_detach(REQUEST *request, rlm_rcode_t *presult)
+{
+	unlang_stack_t			*stack = request->stack;
+	unlang_stack_frame_t		*frame = &stack->frame[stack->depth];
+	unlang_frame_state_detach_t	*state = talloc_get_type_abort(frame->state, unlang_frame_state_detach_t);
+
+	unlang_frame_state_subrequest_t	*parent_state;
+
+	/*
+	 *	We've detached, yielded, and now are continuing
+	 *	processing.  There's nothing more to do, so just
+	 *	continue.
+	 */
+	if (!request->parent) {
+		*presult = state->rcode;
+		return UNLANG_ACTION_CALCULATE_RESULT;
+	}
+
+	/*
+	 *	First time through, detach from the parent.
+	 */
+	RDEBUG2("detach");
+
+	rad_assert(request->parent != NULL);
+
+	/*
+	 *	Get the PARENT's stack.
+	 */
+	stack = request->parent->stack;
+	frame = &stack->frame[stack->depth];
+	parent_state = talloc_get_type_abort(frame->state, unlang_frame_state_subrequest_t);
+
+	if (!parent_state->detachable) {
+		RWDEBUG("Ignoring 'detach' as the request is not detachable");
+		return UNLANG_ACTION_CALCULATE_RESULT;
+	}
+
+	/*
+	 *	If we can't detach the child OR we can't insert it
+	 *	into the backlog, stop processing it.
+	 */
+	if (unlang_detached_child_init(request) < 0) {
+		return UNLANG_ACTION_STOP_PROCESSING;
+	}
+
+	/*
+	 *	The parent frame no longer has a child, and therefore
+	 *	can't be signaled.
+	 */
+	rad_assert(parent_state->child == request);
+	parent_state->child = NULL;
+	frame->signal = NULL;
+
+	/*
+	 *	Pass through whatever the previous instruction had as
+	 *	the result.
+	 */
+	state->rcode = *presult;
+
+	/*
+	 *	Yield to the parent, who will discover that there's no
+	 *	child, and return.
+	 */
 	return UNLANG_ACTION_YIELD;
 }
 
@@ -377,20 +392,22 @@ void unlang_subrequest_free(REQUEST **child)
 	*child = NULL;
 }
 
-static unlang_t subrequest_instruction = {
-	.type = UNLANG_TYPE_SUBREQUEST,
-	.name = "subrequest",
-	.debug_name = "subrequest",
-	.actions = {
-		[RLM_MODULE_REJECT]	= 0,
-		[RLM_MODULE_FAIL]	= MOD_ACTION_RETURN,	/* Exit out of nested levels */
-		[RLM_MODULE_OK]		= 0,
-		[RLM_MODULE_HANDLED]	= 0,
-		[RLM_MODULE_INVALID]	= 0,
-		[RLM_MODULE_USERLOCK]	= 0,
-		[RLM_MODULE_NOTFOUND]	= 0,
-		[RLM_MODULE_NOOP]	= 0,
-		[RLM_MODULE_UPDATED]	= 0
+static unlang_group_t subrequest_instruction = {
+	.self = {
+		.type = UNLANG_TYPE_SUBREQUEST,
+		.name = "subrequest",
+		.debug_name = "subrequest",
+		.actions = {
+			[RLM_MODULE_REJECT]	= 0,
+			[RLM_MODULE_FAIL]	= MOD_ACTION_RETURN,	/* Exit out of nested levels */
+			[RLM_MODULE_OK]		= 0,
+			[RLM_MODULE_HANDLED]	= 0,
+			[RLM_MODULE_INVALID]	= 0,
+			[RLM_MODULE_DISALLOW]	= 0,
+			[RLM_MODULE_NOTFOUND]	= 0,
+			[RLM_MODULE_NOOP]	= 0,
+			[RLM_MODULE_UPDATED]	= 0
+		},
 	},
 };
 
@@ -405,19 +422,21 @@ static unlang_t subrequest_instruction = {
  *
  * @param[in] out		Where to write the result of the subrequest.
  * @param[in] child		to push.
+ * @param[in] session		control values.  Whether we restore/store session info.
  * @param[in] top_frame		Set to UNLANG_TOP_FRAME if the interpreter should return.
  *				Set to UNLANG_SUB_FRAME if the interprer should continue.
  */
-void unlang_subrequest_push(rlm_rcode_t *out, REQUEST *child, bool top_frame)
+void unlang_subrequest_push(rlm_rcode_t *out, REQUEST *child,
+			    unlang_subrequest_session_t const *session, bool top_frame)
 {
-	unlang_frame_state_subrequest_t	*state;
 	unlang_stack_t			*stack = child->parent->stack;
 	unlang_stack_frame_t		*frame;
+	unlang_frame_state_subrequest_t	*state;
 
 	/*
 	 *	Push a new subrequest frame onto the stack
 	 */
-	unlang_interpret_push(child->parent, &subrequest_instruction, RLM_MODULE_UNKNOWN, UNLANG_NEXT_STOP, top_frame);
+	unlang_interpret_push(child->parent, &subrequest_instruction.self, RLM_MODULE_UNKNOWN, UNLANG_NEXT_STOP, top_frame);
 	frame = &stack->frame[stack->depth];
 
 	/*
@@ -425,10 +444,14 @@ void unlang_subrequest_push(rlm_rcode_t *out, REQUEST *child, bool top_frame)
 	 *	This lets us override the normal request
 	 *      the subrequest instruction would alloc.
 	 */
-	MEM(frame->state = state = talloc_zero(stack, unlang_frame_state_subrequest_t));
+	state = talloc_get_type_abort(frame->state, unlang_frame_state_subrequest_t);
 	state->presult = out;
-	state->persist = true;
 	state->child = child;
+	state->free_child = false;
+	state->detachable = false;
+	if (session) state->session = *session;
+
+	frame->interpret = unlang_subrequest_start;
 }
 
 int unlang_subrequest_op_init(void)
@@ -445,16 +468,19 @@ int unlang_subrequest_op_init(void)
 	unlang_register(UNLANG_TYPE_SUBREQUEST,
 			   &(unlang_op_t){
 				.name = "subrequest",
-				.func = unlang_subrequest,
+				.interpret = unlang_subrequest_state_init,
 				.signal = unlang_subrequest_signal,
-				.resume = unlang_subrequest_resume,
-				.debug_braces = true
+				.debug_braces = true,
+				.frame_state_size = sizeof(unlang_frame_state_subrequest_t),
+				.frame_state_name = "unlang_frame_state_subrequest_t",
 			   });
 
 	unlang_register(UNLANG_TYPE_DETACH,
 			   &(unlang_op_t){
 				.name = "detach",
-				.func = unlang_detach,
+				.interpret = unlang_detach,
+				.frame_state_size = sizeof(unlang_frame_state_detach_t),
+				.frame_state_name = "unlang_frame_state_detach_t",
 			   });
 
 	return 0;

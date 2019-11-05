@@ -1,6 +1,6 @@
 #pragma once
 /*
- *   This program is is free software; you can redistribute it and/or modify
+ *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
  *   the Free Software Foundation; either version 2 of the License, or (at
  *   your option) any later version.
@@ -23,7 +23,7 @@
  * @author Arran Cudbard-Bell
  *
  * @copyright 2015 Arran Cudbard-Bell (a.cudbardb@freeradius.org)
- * @copyright 2015 Network RADIUS SARL (info@networkradius.com)
+ * @copyright 2015 Network RADIUS SARL (legal@networkradius.com)
  * @copyright 2015 The FreeRADIUS Server Project
  */
 RCSIDH(json_h, "$Id$")

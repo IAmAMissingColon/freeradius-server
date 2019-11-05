@@ -1,4 +1,6 @@
-FILES  := \
+TEST	:= test.bin
+
+FILES	:= \
 	atomic_queue_test 	\
 	control_test 		\
 	dhcpclient		\
@@ -18,38 +20,16 @@ FILES  := \
 	unit_test_module
 
 
-DICT_DIR := $(top_srcdir)/share/dictionary
-
-#
-#  Create the output directory
-#
-.PHONY: $(BUILD_DIR)/tests/bin
-$(BUILD_DIR)/tests/bin:
-	${Q}mkdir -p $@
+$(eval $(call TEST_BOOTSTRAP))
 
 #
 #  Files in the output dir depend on the bin tests, and on the binary
 #  that we're running
 #
-$(BUILD_DIR)/tests/bin/%: $(DIR)/% $(TESTBINDIR)/% | $(BUILD_DIR)/tests/bin
+$(BUILD_DIR)/tests/bin/%: $(DIR)/% %
 	${Q}echo BIN-TEST $(notdir $@)
-	${Q}TESTBIN="$(TESTBIN)" TESTBINDIR="$(TESTBINDIR)" DICT_DIR="$(DICT_DIR)" $<
+	${Q}if ! TESTBIN="$(TESTBIN)" DICT_DIR="$(top_srcdir)/share/dictionary" $<; then \
+		echo TESTBIN=\"$(TESTBIN)\" DICT_DIR="$(top_srcdir)/share/dictionary" $<; \
+		exit 1; \
+	fi
 	${Q}touch $@
-
-#
-#  Get all of the bin test output files
-#
-TESTS.BIN_FILES := $(addprefix $(BUILD_DIR)/tests/bin/,$(FILES))
-
-$(TESTS.BIN_FILES): $(TESTS.DICT_FILES)
-
-#
-#  Depend on the output files, and create the directory first.
-#
-tests.bin: $(TESTS.BIN_FILES)
-
-.PHONY: clean.tests.bin
-clean.tests.bin:
-	${Q}rm -rf $(BUILD_DIR)/tests/bin/
-
-clean.test: clean.tests.bin

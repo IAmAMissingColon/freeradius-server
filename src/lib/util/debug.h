@@ -29,7 +29,11 @@ extern "C" {
 #include <freeradius-devel/missing.h>
 #include <freeradius-devel/util/fring.h>
 
-#define MEM(x) if (!(x)) { ERROR("%s[%u] OUT OF MEMORY", __FILE__, __LINE__); _fr_exit_now(__FILE__, __LINE__, EXIT_FAILURE); }
+#ifdef NO_ASSERT
+# define MEM(x) error "Use of MEM() not allowed in this source file.  Deal with memory allocation failure gracefully"
+#else
+# define MEM(x) do { if (!(x)) { ERROR("%s[%u] OUT OF MEMORY", __FILE__, __LINE__); _fr_exit_now(__FILE__, __LINE__, EXIT_FAILURE); } } while (0)
+#endif
 
 typedef enum {
 	DEBUGGER_STATE_UNKNOWN_NO_PTRACE	= -3,	//!< We don't have ptrace so can't check.
@@ -95,6 +99,13 @@ bool		fr_cond_assert_fail(char const *file, int line, char const *expr, char con
  * @param _x expression to test (should evaluate to true)
  */
 #define		fr_cond_assert(_x) likely((bool)((_x) ? true : (fr_cond_assert_fail(__FILE__, __LINE__, #_x, NULL) && false)))
+
+/** Calls panic_action ifndef NDEBUG, else logs error
+ *
+ * @param[in] _msg	to log.
+ * @param[in] ...	args.
+ */
+#define		fr_assert_fail(_msg, ...) fr_cond_assert_fail(__FILE__, __LINE__, "false", _msg,  ## __VA_ARGS__)
 
 /** Calls panic_action ifndef NDEBUG, else logs error and evaluates to value of _x
  *

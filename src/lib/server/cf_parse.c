@@ -153,7 +153,13 @@ int cf_pair_parse_value(TALLOC_CTX *ctx, void *out, UNUSED void *base, CONF_ITEM
 		return -1;
 	}
 
-	rad_assert(cp->value);
+	/*
+	 *	Catch crazy errors.
+	 */
+	if (!cp->value) {
+		cf_log_err(cp, "Configuration pair \"%s\" must have a value", cf_pair_attr(cp));
+		return -1;
+	}
 
 	/*
 	 *	Check for zero length strings
@@ -673,7 +679,8 @@ static int CC_HINT(nonnull(4,5)) cf_pair_parse_internal(TALLOC_CTX *ctx, void *o
 
 		default:
 			cf_log_err(cp, "Unsupported type %i (%i)", type, FR_BASE_TYPE(type));
-			if (!fr_cond_assert(0)) return -1;	/* Unsupported type */
+			fr_assert_fail(NULL);
+			return -1;	/* Unsupported type */
 		}
 
 		for (i = 0; i < count; i++, cp = cf_pair_find_next(cs, cp, rule->name)) {

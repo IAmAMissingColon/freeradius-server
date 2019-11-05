@@ -57,7 +57,7 @@ fr_dict_attr_autoload_t proto_vmps_dynamic_client_dict_attr[] = {
 #define CLIENT_ADD	(1)
 #define CLIENT_NAK	(257)
 
-static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request)
+static rlm_rcode_t mod_process(UNUSED void const *instance, REQUEST *request)
 {
 	rlm_rcode_t rcode;
 	CONF_SECTION *unlang;
@@ -85,11 +85,11 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request)
 		/* FALL-THROUGH */
 
 	case REQUEST_RECV:
-		rcode = unlang_interpret_resume(request);
+		rcode = unlang_interpret(request);
 
-		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
+		if (request->master_state == REQUEST_STOP_PROCESSING) return RLM_MODULE_HANDLED;
 
-		if (rcode == RLM_MODULE_YIELD) return FR_IO_YIELD;
+		if (rcode == RLM_MODULE_YIELD) return RLM_MODULE_YIELD;
 
 		rad_assert(request->log.unlang_indent == 0);
 
@@ -121,11 +121,11 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request)
 		/* FALL-THROUGH */
 
 	case REQUEST_SEND:
-		rcode = unlang_interpret_resume(request);
+		rcode = unlang_interpret(request);
 
-		if (request->master_state == REQUEST_STOP_PROCESSING) return FR_IO_DONE;
+		if (request->master_state == REQUEST_STOP_PROCESSING) return RLM_MODULE_HANDLED;
 
-		if (rcode == RLM_MODULE_YIELD) return FR_IO_YIELD;
+		if (rcode == RLM_MODULE_YIELD) return RLM_MODULE_YIELD;
 
 		rad_assert(request->log.unlang_indent == 0);
 
@@ -182,10 +182,10 @@ static fr_io_final_t mod_process(UNUSED void const *instance, REQUEST *request)
 		break;
 
 	default:
-		return FR_IO_FAIL;
+		return RLM_MODULE_FAIL;
 	}
 
-	return FR_IO_REPLY;
+	return RLM_MODULE_OK;
 }
 
 

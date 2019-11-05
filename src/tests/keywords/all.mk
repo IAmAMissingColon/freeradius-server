@@ -6,7 +6,7 @@
 #
 #  Test name
 #
-TEST := tests.keywords
+TEST := test.keywords
 
 #
 #  The test files are files without extensions.
@@ -22,49 +22,7 @@ ifeq "$(OPENSSL_LIBS)" ""
 FILES := $(filter-out pap-ssha2 sha2,$(FILES))
 endif
 
-OUTPUT := $(subst $(top_srcdir)/src,$(BUILD_DIR),$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
-
-#
-#  Create the output directory
-#
-.PHONY: $(OUTPUT)
-$(OUTPUT):
-	${Q}mkdir -p $@
-
-#
-#  All of the output files depend on the input files
-#
-FILES.$(TEST) := $(addprefix $(OUTPUT),$(notdir $(FILES)))
-
-#
-#  The output files also depend on the directory
-#  and on the previous test.
-#
-$(FILES.$(TEST)): | $(OUTPUT)
-
-#
-#  We have a real file that's created if all of the tests pass.
-#
-$(BUILD_DIR)/tests/$(TEST): $(FILES.$(TEST))
-	${Q}touch $@
-
-#
-#  For simplicity, we create a phony target so that the poor developer
-#  doesn't need to remember path names
-#
-$(TEST): $(BUILD_DIR)/tests/$(TEST)
-
-#
-#  Clean the ouput directory and files.
-#
-#  Note that we have to specify the actual filenames here, because
-#  of stupidities with GNU Make.
-#
-.PHONY: clean.$(TEST)
-clean.$(TEST):
-	${Q}rm -rf $(BUILD_DIR)/tests/keywords $(BUILD_DIR)/tests/tests.keywords
-
-clean.test: clean.$(TEST)
+$(eval $(call TEST_BOOTSTRAP))
 
 #
 #  Find which input files are needed by the tests
@@ -104,7 +62,7 @@ $(BOOTSTRAP): $(DIR)/default-input.attrs | $(OUTPUT)
 #
 #  These ones get copied over from their original files
 #
-$(BUILD)/tests/keywords/%.attrs: $(DIR)/%.attrs $(DIR)/default-input.attrs | $(OUTPUT)
+$(OUTPUT)/%.attrs: $(DIR)/%.attrs $(DIR)/default-input.attrs | $(OUTPUT)
 	${Q}cp $< $@
 
 #
@@ -113,7 +71,16 @@ $(BUILD)/tests/keywords/%.attrs: $(DIR)/%.attrs $(DIR)/default-input.attrs | $(O
 #
 .PRECIOUS: $(OUTPUT)/%.attrs
 
-KEYWORD_MODULES := $(shell grep -- mods-enabled src/tests/keywords/unit_test_module.conf | sed 's,.*/,,')
+#
+#  Cache the list of modules which are enabled, so that we don't run
+#  the shell script on every build.
+#
+#  KEYWORD_MODULES := $(shell grep -- mods-enabled src/tests/keywords/unit_test_module.conf | sed 's,.*/,,')
+#
+$(OUTPUT)/enabled.mk: src/tests/keywords/unit_test_module.conf | $(OUTPUT)
+	${Q}echo "KEYWORD_MODULES := " $$(grep -- mods-enabled src/tests/keywords/unit_test_module.conf | sed 's,.*/,,' | tr '\n' ' ' ) > $@
+-include $(OUTPUT)/enabled.mk
+
 KEYWORD_RADDB	:= $(addprefix raddb/mods-enabled/,$(KEYWORD_MODULES))
 KEYWORD_LIBS	:= $(addsuffix .la,$(addprefix rlm_,$(KEYWORD_MODULES))) rlm_example.la rlm_cache.la rlm_csv.la
 
@@ -133,7 +100,7 @@ KEYWORD_LIBS	:= $(addsuffix .la,$(addprefix rlm_,$(KEYWORD_MODULES))) rlm_exampl
 #  Otherwise, check the log file for a parse error which matches the
 #  ERROR line in the input.
 #
-$(BUILD_DIR)/tests/keywords/%: $(DIR)/% $(TESTBINDIR)/unit_test_module | $(KEYWORD_RADDB) $(KEYWORD_LIBS) build.raddb rlm_cache_rbtree.la rlm_test.la rlm_csv.la
+$(OUTPUT)/%: $(DIR)/% $(TESTBINDIR)/unit_test_module | $(KEYWORD_RADDB) $(KEYWORD_LIBS) build.raddb rlm_cache_rbtree.la rlm_test.la rlm_csv.la
 	${Q}echo KEYWORD-TEST $(notdir $@)
 	${Q}if [ -f $<.attrs ] ; then \
 		cp $<.attrs $(BUILD_DIR)/tests/keywords/; \
@@ -145,7 +112,7 @@ $(BUILD_DIR)/tests/keywords/%: $(DIR)/% $(TESTBINDIR)/unit_test_module | $(KEYWO
 			cat $@.log; \
 			echo "# $@.log"; \
 			echo "KEYWORD=$(notdir $@) $(TESTBIN)/unit_test_module -D share/dictionary -d src/tests/keywords/ -i \"$@.attrs\" -f \"$@.attrs\" -r \"$@\" -xx"; \
-			rm -f $(BUILD_DIR)/tests/tests.keywords; \
+			rm -f $(BUILD_DIR)/tests/test.keywords; \
 			exit 1; \
 		fi; \
 		FOUND=$$(grep -E '^(Error : )?$<' $@.log | head -1 | sed 's/.*\[//;s/\].*//'); \
@@ -154,7 +121,7 @@ $(BUILD_DIR)/tests/keywords/%: $(DIR)/% $(TESTBINDIR)/unit_test_module | $(KEYWO
 			cat $@.log; \
 			echo "# $@.log"; \
 			echo "KEYWORD=$(notdir $@) $(TESTBIN)/unit_test_module -D share/dictionary -d src/tests/keywords/ -i \"$@.attrs\" -f \"$@.attrs\" -r \"$@\" -xx"; \
-			rm -f $(BUILD_DIR)/tests/tests.keywords; \
+			rm -f $(BUILD_DIR)/tests/test.keywords; \
 			exit 1; \
 		else \
 			touch "$@"; \

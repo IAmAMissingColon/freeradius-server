@@ -43,7 +43,7 @@ static bool chbind_build_response(REQUEST *request, CHBIND_REQ *chbind)
 		/*
 		 *	Skip things which shouldn't be in channel bindings.
 		 */
-		if (vp->da->flags.encrypt != FLAG_ENCRYPT_NONE) continue;
+		if (vp->da->flags.subtype != FLAG_ENCRYPT_NONE) continue;
 		if (vp->da == attr_message_authenticator) continue;
 
 		total += 2 + vp->vp_length;
@@ -90,7 +90,7 @@ static bool chbind_build_response(REQUEST *request, CHBIND_REQ *chbind)
 		/*
 		 *	Skip things which shouldn't be in channel bindings.
 		 */
-		if (vp->da->flags.encrypt != FLAG_ENCRYPT_NONE) {
+		if (vp->da->flags.subtype != FLAG_ENCRYPT_NONE) {
 		next:
 			fr_cursor_next(&cursor);
 			continue;
@@ -297,8 +297,7 @@ VALUE_PAIR *eap_chbind_packet2vp(RADIUS_PACKET *packet, chbind_packet_t *chbind)
 
 	if (!chbind) return NULL; /* don't produce garbage */
 
-	vp = fr_pair_afrom_da(packet, attr_eap_channel_binding_message);
-	if (!vp) return NULL;
+	MEM(vp = fr_pair_afrom_da(packet, attr_eap_channel_binding_message));
 	fr_pair_value_memcpy(vp, (uint8_t *) chbind, talloc_array_length((uint8_t *)chbind), false);
 
 	return vp;

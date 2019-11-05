@@ -26,10 +26,11 @@
 RCSID("$Id$")
 
 #include <freeradius-devel/server/cond_eval.h>
-#include <freeradius-devel/server/module.h>
 #include <freeradius-devel/server/cond.h>
-#include <freeradius-devel/server/regex.h>
+#include <freeradius-devel/server/module.h>
+#include <freeradius-devel/server/paircmp.h>
 #include <freeradius-devel/server/rad_assert.h>
+#include <freeradius-devel/server/regex.h>
 
 #include <ctype.h>
 
@@ -697,7 +698,7 @@ int cond_eval(REQUEST *request, int modreturn, int depth, fr_cond_t const *c)
 #ifdef WITH_EVAL_DEBUG
 	char buffer[1024];
 
-	cond_snprint(buffer, sizeof(buffer), c);
+	cond_snprint(NULL, buffer, sizeof(buffer), c);
 	EVAL_DEBUG("%s", buffer);
 #endif
 

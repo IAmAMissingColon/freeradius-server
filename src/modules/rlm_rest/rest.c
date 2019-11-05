@@ -714,9 +714,10 @@ static int rest_decode_plain(rlm_rest_t const *inst, UNUSED rlm_rest_section_t c
  *	- Number of VALUE_PAIRs processed.
  *	- -1 on unrecoverable error.
  */
-static int rest_decode_post(UNUSED rlm_rest_t const *instance, UNUSED rlm_rest_section_t const *section,
+static int rest_decode_post(rlm_rest_t const *instance, UNUSED rlm_rest_section_t const *section,
 			    REQUEST *request, void *handle, char *raw, size_t rawlen)
 {
+	rlm_rest_t const	*inst = instance;
 	rlm_rest_handle_t	*randle = handle;
 	CURL			*candle = randle->candle;
 
@@ -810,7 +811,9 @@ static int rest_decode_post(UNUSED rlm_rest_t const *instance, UNUSED rlm_rest_s
 
 		if (xlat_aeval(request, &expanded, request, value, NULL, NULL) < 0) goto skip;
 
-		vp = fr_pair_afrom_da(ctx, da);
+		rad_assert(expanded);
+
+		MEM(vp = fr_pair_afrom_da(ctx, da));
 		if (!vp) {
 			REDEBUG("Failed creating valuepair");
 			talloc_free(expanded);
@@ -864,24 +867,25 @@ static int rest_decode_post(UNUSED rlm_rest_t const *instance, UNUSED rlm_rest_s
  *	- #VALUE_PAIR just created.
  *	- NULL on error.
  */
-static VALUE_PAIR *json_pair_alloc_leaf(UNUSED rlm_rest_t const *instance, UNUSED rlm_rest_section_t const *section,
+static VALUE_PAIR *json_pair_alloc_leaf(rlm_rest_t const *instance, UNUSED rlm_rest_section_t const *section,
 				        TALLOC_CTX *ctx, REQUEST *request,
 				        fr_dict_attr_t const *da, json_flags_t *flags, json_object *leaf)
 {
-	char const	*value;
-	char		*expanded = NULL;
-	int 		ret;
+	rlm_rest_t const	*inst = instance;
+	char const		*value;
+	char			*expanded = NULL;
+	int 			ret;
 
-	VALUE_PAIR	*vp;
+	VALUE_PAIR		*vp;
 
-	fr_value_box_t	src;
+	fr_value_box_t		src;
 
 	if (fr_json_object_is_type(leaf, json_type_null)) {
 		RDEBUG3("Got null value for attribute \"%s\" (skipping)", da->name);
 		return NULL;
 	}
 
-	vp = fr_pair_afrom_da(ctx, da);
+	MEM(vp = fr_pair_afrom_da(ctx, da));
 	if (!vp) {
 		RWDEBUG("Failed creating valuepair for attribute \"%s\" (skipping)", da->name);
 		talloc_free(expanded);
@@ -906,7 +910,7 @@ static VALUE_PAIR *json_pair_alloc_leaf(UNUSED rlm_rest_t const *instance, UNUSE
 
 	case json_type_string:
 		value = json_object_get_string(leaf);
-		if (flags->do_xlat) {
+		if (flags->do_xlat && memchr(value, '%', json_object_get_string_len(leaf))) {
 			if (xlat_aeval(request, &expanded, request, value, NULL, NULL) < 0) return NULL;
 			src.vb_strvalue = expanded;
 			src.datum.length = talloc_array_length(src.vb_strvalue) - 1;
@@ -1118,6 +1122,11 @@ static int json_pair_alloc(rlm_rest_t const *instance, rlm_rest_section_t const 
 				RWDEBUG("Value key missing (skipping)");
 				continue;
 			}
+
+			/*
+			 *  The value field now becomes the key we're operating on
+			 */
+			value = tmp;
 		}
 
 		/*
@@ -1167,7 +1176,9 @@ static int json_pair_alloc(rlm_rest_t const *instance, rlm_rest_section_t const 
 							  dst->tmpl_da, &flags, element);
 				if (!vp) continue;
 			}
-			RDEBUG2("&%pP", vp);
+			RINDENT();
+			RDEBUG2("&%s:%pP", fr_table_str_by_value(pair_list_table, dst->tmpl_list, ""), vp);
+			REXDENT();
 			radius_pairmove(current, vps, vp, false);
 		/*
 		 *  If we call json_object_array_get_idx on something that's not an array
@@ -1914,7 +1925,7 @@ int rest_request_config(rlm_rest_t const *inst, rlm_rest_thread_t *t, rlm_rest_s
 			continue;
 		}
 		RINDENT();
-		RDEBUG3("%s", header->vp_strvalue);
+		RDEBUG3("%pV", &header->data);
 		REXDENT();
 
 		ctx->headers = curl_slist_append(ctx->headers, header->vp_strvalue);

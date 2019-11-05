@@ -29,11 +29,12 @@
 RCSID("$Id$")
 
 #include <freeradius-devel/server/base.h>
-#include <freeradius-devel/server/modpriv.h>
-#include <freeradius-devel/server/cond.h>
-#include <freeradius-devel/unlang/base.h>
-#include <freeradius-devel/server/radmin.h>
 #include <freeradius-devel/server/cf_file.h>
+#include <freeradius-devel/server/cond.h>
+#include <freeradius-devel/server/modpriv.h>
+#include <freeradius-devel/server/radmin.h>
+#include <freeradius-devel/server/request_data.h>
+#include <freeradius-devel/unlang/base.h>
 
 static TALLOC_CTX *instance_ctx = NULL;
 static size_t instance_num = 0;
@@ -165,12 +166,12 @@ static int cmd_set_module_status(UNUSED FILE *fp, UNUSED FILE *fp_err, void *ctx
 	module_instance_t *mi = ctx;
 	rlm_rcode_t rcode;
 
-	if (strcmp(info->argv[1], "alive") == 0) {
+	if (strcmp(info->argv[0], "alive") == 0) {
 		mi->force = false;
 		return 0;
 	}
 
-	rcode = fr_table_value_by_str(rcode_table, info->argv[1], RLM_MODULE_UNKNOWN);
+	rcode = fr_table_value_by_str(rcode_table, info->argv[0], RLM_MODULE_UNKNOWN);
 	rad_assert(rcode != RLM_MODULE_UNKNOWN);
 
 	mi->code = rcode;
@@ -204,7 +205,7 @@ static fr_cmd_table_t cmd_module_table[] = {
 		.parent = "set module",
 		.add_name = true,
 		.name = "status",
-		.syntax = "(alive|ok|fail|reject|handled|invalid|userlock|notfound|noop|updated)",
+		.syntax = "(alive|ok|fail|reject|handled|invalid|disallow|notfound|noop|updated)",
 		.func = cmd_set_module_status,
 		.help = "Change module status to fixed value.",
 		.read_only = false,
@@ -630,7 +631,6 @@ bool module_section_type_set(REQUEST *request, fr_dict_attr_t const *type_da, fr
 		return false;
 
 	default:
-		MEM(0);
 		return false;
 	}
 }

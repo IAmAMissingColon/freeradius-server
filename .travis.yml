@@ -118,7 +118,8 @@ services:
 - postgresql
 - redis-server
 before_install:
-- npm i -g @antora/cli@2.0 @antora/site-generator-default@2.0
+# Add IPv6 interfaces: https://github.com/travis-ci/travis-ci/issues/8361
+- sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
 - sudo ./scripts/travis/cassandra-install.sh
 - rvm --install --default --binary use 2.4
 - gem install asciidoctor
@@ -134,5 +135,10 @@ before_install:
 before_script:
 - ./scripts/travis/build.sh
 script:
-- if [ "${DO_BUILD}" = 'yes' -a "${COVERITY_SCAN_BRANCH}" != 1 ]; then make travis-test; fi
-- if [ "${DO_BUILD}" = 'no' ]; then make tests.doc; fi
+- |
+  if [ "${DO_BUILD}" = 'yes' -a "${COVERITY_SCAN_BRANCH}" != 1 ]; then
+    make travis-test;
+  elif [ "${DO_BUILD}" = 'no' ]; then
+    npm i -g @antora/cli@2.0 @antora/site-generator-default@2.0;
+    make doxygen;
+  fi

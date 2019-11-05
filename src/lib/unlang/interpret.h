@@ -33,37 +33,24 @@ extern "C" {
 #define UNLANG_TOP_FRAME (true)
 #define UNLANG_SUB_FRAME (false)
 
-/** Function to call when first evaluating a frame
+/** Function to call when interpreting a frame
  *
  * @param[in] request		The current request.
  * @param[in,out] presult	Pointer to the current rcode, may be modified by the function.
- * @param[in,out] priority	Pointer to the current priority, may be modified by the function.
  * @return an action for the interpreter to perform.
  */
-typedef unlang_action_t (*unlang_op_call_t)(REQUEST *request, rlm_rcode_t *presult, int *priority);
+typedef unlang_action_t (*unlang_op_interpret_t)(REQUEST *request, rlm_rcode_t *presult);
 
 /** Function to call if the initial function yielded and the request was signalled
  *
  * This is the operation specific cancellation function.  This function will usually
  * either call a more specialised cancellation function set when something like a module yielded,
- * or just cleanup the state of the original #unlang_op_call_t.
+ * or just cleanup the state of the original #unlang_op_interpret_t.
  *
  * @param[in] request		The current request.
- * @param[in] rctx	A structure allocated by the initial #unlang_op_call_t to store
- *				the result of the async execution.
  * @param[in] action		We're being signalled with.
  */
-typedef void (*unlang_op_signal_t)(REQUEST *request, void *rctx, fr_state_signal_t action);
-
-/** Function to call if the initial function yielded and the request is resumable
- *
- * @param[in] request		The current request.
- * @param[in,out] presult	Pointer to the current rcode, may be modified by the function.
- * @param[in] rctx		A structure allocated by the initial #unlang_op_call_t to store
- *				the result of the async execution.
- * @return an action for the interpreter to perform.
- */
-typedef unlang_action_t (*unlang_op_resume_t)(REQUEST *request, rlm_rcode_t *presult, void *rctx);
+typedef void (*unlang_op_signal_t)(REQUEST *request, fr_state_signal_t action);
 
 /** A generic function pushed by a module or xlat to functions deeper in the C call stack to create resumption points
  *
@@ -83,16 +70,20 @@ typedef unlang_action_t (*unlang_function_t)(REQUEST *request, rlm_rcode_t *pres
 typedef struct {
 	char const		*name;				//!< Name of the operation.
 
-	unlang_op_call_t	func;				//!< Called when we start the operation.
+	unlang_op_interpret_t	interpret;     			//!< Function to interpret the keyword
 
-	unlang_op_signal_t	signal;				//!< Called if the request is to be destroyed
-								///< and we need to cleanup any residual state.
-
-	unlang_op_resume_t	resume;				//!< Called if we're continuing processing
-								///< a request.
+	unlang_op_signal_t	signal;				//!< Function to signal stop / dup / whatever
 
 	bool			debug_braces;			//!< Whether the operation needs to print braces
 								///< in debug mode.
+
+	size_t			frame_state_size;       	//!< size of instance data in the stack frame
+
+	char const		*frame_state_name;		//!< talloc name of the frame instance data
+
+	size_t			frame_state_pool_objects;	//!< How many sub-allocations we expect.
+
+	size_t			frame_state_pool_size;		//!< The total size of the pool to alloc.
 } unlang_op_t;
 
 void		unlang_interpret_push_function(REQUEST *request,
@@ -101,9 +92,9 @@ void		unlang_interpret_push_function(REQUEST *request,
 void		unlang_interpret_push_section(REQUEST *request, CONF_SECTION *cs,
 					      rlm_rcode_t default_action, bool top_frame);
 
-rlm_rcode_t	unlang_interpret_resume(REQUEST *request);
+rlm_rcode_t	unlang_interpret(REQUEST *request);
 
-rlm_rcode_t	unlang_interpret(REQUEST *request, CONF_SECTION *cs, rlm_rcode_t default_action);
+rlm_rcode_t	unlang_interpret_section(REQUEST *request, CONF_SECTION *cs, rlm_rcode_t default_action);
 
 rlm_rcode_t	unlang_interpret_synchronous(REQUEST *request, CONF_SECTION *cs, rlm_rcode_t action);
 

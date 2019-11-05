@@ -49,7 +49,7 @@ typedef struct {
 } fr_virtual_namespace_t;
 
 typedef struct {
-	dl_module_inst_t		*proto_module;		//!< The proto_* module for a listen section.
+	dl_module_inst_t	*proto_module;		//!< The proto_* module for a listen section.
 	fr_app_t const		*app;			//!< Easy access to the exported struct.
 } fr_virtual_listen_t;
 
@@ -58,6 +58,23 @@ typedef struct {
 	char const		*namespace;		//!< Protocol namespace
 	fr_virtual_listen_t	**listener;		//!< Listeners in this virtual server.
 } fr_virtual_server_t;
+
+static fr_dict_t *dict_freeradius;
+
+static fr_dict_attr_t const *attr_auth_type;
+
+extern fr_dict_autoload_t virtual_server_dict[];
+fr_dict_autoload_t virtual_server_dict[] = {
+	{ .out = &dict_freeradius, .proto = "freeradius" },
+	{ NULL }
+};
+
+extern fr_dict_attr_autoload_t virtual_server_dict_attr[];
+fr_dict_attr_autoload_t virtual_server_dict_attr[] = {
+	{ .out = &attr_auth_type, .name = "Auth-Type", .type = FR_TYPE_UINT32, .dict = &dict_freeradius },
+
+	{ NULL }
+};
 
 /** Top level structure holding all virtual servers
  *
@@ -248,12 +265,10 @@ static int namespace_on_read(UNUSED TALLOC_CTX *ctx, UNUSED void *out, UNUSED vo
 	}
 
 	if (virtual_server_namespace_set(server_cs, proto_dict, proto_dir) < 0) {
-#if 1
-		return 0;
-#else
+		if (strncmp(proto_dict, "eap-", 4) == 0) return 0;
+
 		cf_log_perr(ci, "Failed initialising namespace \"%s\" - %s", namespace_str, fr_strerror());
 		return -1;
-#endif
 	}
 
 	return 0;
@@ -581,6 +596,18 @@ int virtual_servers_instantiate(void)
 					return -1;
 				}
 				if ((found->func(server_cs) < 0)) return -1;
+			/*
+			 *	If it's not a virtual namespace, check a
+			 *	dictionary was loaded in a previous phase.
+			 */
+			} else {
+				if (!cf_data_find(server_cs, fr_dict_t *, "dictionary")) {
+					if (!cf_section_find(server_cs, "listen", CF_IDENT_ANY)) {
+						cf_log_err(ns, "Failed resolving namespace.  Verify that modules "
+							   "referencing this server are enabled");
+						return -1;
+					}
+				}
 			}
 		}
 
@@ -973,17 +1000,31 @@ int virtual_servers_init(CONF_SECTION *config)
 {
 	virtual_server_root = config;
 
-	MEM(listen_addr_root = rbtree_create(config, listen_addr_cmp, NULL, RBTREE_FLAG_NONE));
-	MEM(server_section_name_tree = rbtree_create(config, server_section_name_cmp, NULL, RBTREE_FLAG_NONE));
+	if (fr_dict_autoload(virtual_server_dict) < 0) {
+		PERROR("%s", __FUNCTION__);
+		return -1;
+	}
+	if (fr_dict_attr_autoload(virtual_server_dict_attr) < 0) {
+		PERROR("%s", __FUNCTION__);
+		fr_dict_autofree(virtual_server_dict);
+		return -1;
+	}
+
+	MEM(listen_addr_root = rbtree_create(NULL, listen_addr_cmp, NULL, RBTREE_FLAG_NONE));
+	MEM(server_section_name_tree = rbtree_create(NULL, server_section_name_cmp, NULL, RBTREE_FLAG_NONE));
 
 	return 0;
 }
 
 int virtual_servers_free(void)
 {
+	TALLOC_FREE(listen_addr_root);
+	TALLOC_FREE(server_section_name_tree);
+
+	fr_dict_autofree(virtual_server_dict);
+
 	return 0;
 }
-
 
 /**
  */
@@ -1052,13 +1093,46 @@ rlm_rcode_t process_authenticate(int auth_type, REQUEST *request)
 	request->module = NULL;
 	request->component = "authenticate";
 
-	rcode = unlang_interpret(request, cs, RLM_MODULE_REJECT);
+	rcode = unlang_interpret_section(request, cs, RLM_MODULE_REJECT);
 
 	request->component = component;
 	request->module = module;
 	request->server_cs = server_cs;
 
 	return rcode;
+}
+
+rlm_rcode_t virtual_server_process_auth(REQUEST *request, CONF_SECTION *virtual_server,
+					rlm_rcode_t default_rcode,
+					fr_unlang_module_resume_t resume,
+					fr_unlang_module_signal_t signal, void *rctx)
+{
+	VALUE_PAIR	*vp;
+	CONF_SECTION	*auth_cs = NULL;
+	char const	*auth_name;
+
+	vp = fr_pair_find_by_da(request->control, attr_auth_type, TAG_ANY);
+	if (!vp) {
+		RDEBUG2("No &control:Auth-Type found");
+	fail:
+		request->rcode = RLM_MODULE_FAIL;
+		return unlang_module_yield_to_section(request, NULL, RLM_MODULE_FAIL, resume, signal, rctx);
+	}
+
+	auth_name = fr_dict_enum_alias_by_value(attr_auth_type, &vp->data);
+	if (!auth_name) {
+		REDEBUG2("Invalid %pP value", vp);
+		goto fail;
+	}
+
+	auth_cs = cf_section_find(virtual_server, "authenticate", auth_name);
+	if (!auth_cs) {
+		REDEBUG2("No authenticate %s { ... } section found in virtual server \"%s\"",
+			 auth_name, cf_section_name2(virtual_server));
+		goto fail;
+	}
+
+	return unlang_module_yield_to_section(request, auth_cs, default_rcode, resume, signal, rctx);
 }
 
 /*
@@ -1188,7 +1262,7 @@ int fr_app_process_instantiate(CONF_SECTION *server, dl_module_inst_t **type_sub
 		 *	Compile the processing sections.
 		 */
 		if (app_process->compile_list &&
-		    (virtual_server_compile_sections(server, app_process->compile_list, &parse_rules) < 0)) {
+		    (virtual_server_compile_sections(server, app_process->compile_list, &parse_rules, type_submodule[i]->data) < 0)) {
 			return -1;
 		}
 
@@ -1221,7 +1295,7 @@ int fr_app_process_instantiate(CONF_SECTION *server, dl_module_inst_t **type_sub
  *  This function walks down the registration table, compiling each
  *  named section.
  */
-int virtual_server_compile_sections(CONF_SECTION *server, virtual_server_compile_t const *list, vp_tmpl_rules_t const *rules)
+int virtual_server_compile_sections(CONF_SECTION *server, virtual_server_compile_t const *list, vp_tmpl_rules_t const *rules, void *uctx)
 {
 	int i;
 	CONF_SECTION *subcs = NULL;
@@ -1247,8 +1321,15 @@ int virtual_server_compile_sections(CONF_SECTION *server, virtual_server_compile
 				continue;
 			}
 
-			rcode = unlang_compile_subsection(subcs, list[i].component, rules);
+			rcode = unlang_compile(subcs, list[i].component, rules);
 			if (rcode < 0) return -1;
+
+			/*
+			 *	Cache the CONF_SECTION which was found.
+			 */
+			if (uctx && (list[i].offset > 0)) {
+				*(CONF_SECTION **) (((uint8_t *) uctx) + list[i].offset) = subcs;
+			}
 			continue;
 		}
 
@@ -1265,8 +1346,16 @@ int virtual_server_compile_sections(CONF_SECTION *server, virtual_server_compile
 				return -1;
 			}
 
-			rcode = unlang_compile_subsection(subcs, list[i].component, rules);
+			rcode = unlang_compile(subcs, list[i].component, rules);
 			if (rcode < 0) return -1;
+
+			/*
+			 *	Note that we don't store the
+			 *	CONF_SECTION here, as it's a wildcard.
+			 *
+			 *	@todo - count number of subsections
+			 *	and store them in an array?
+			 */
 		}
 	}
 
@@ -1411,3 +1500,4 @@ virtual_server_method_t *virtual_server_section_methods(char const *name1, char 
 
 	return entry->methods;
 }
+

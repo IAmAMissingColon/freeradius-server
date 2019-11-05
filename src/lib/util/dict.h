@@ -68,17 +68,42 @@ typedef struct {
 
 	unsigned int		extra : 1;			//!< for LONG extended attributes
 
-	enum {
-		FLAG_ENCRYPT_NONE = 0,				//!< Don't encrypt the attribute.
-		FLAG_ENCRYPT_USER_PASSWORD,			//!< Encrypt attribute RFC 2865 style.
-		FLAG_ENCRYPT_TUNNEL_PASSWORD,			//!< Encrypt attribute RFC 2868 style.
-		FLAG_ENCRYPT_ASCEND_SECRET,			//!< Encrypt attribute ascend style.
-		FLAG_ENCRYPT_OTHER,				//!< Non-RADIUS encryption
-	} encrypt;
+	uint8_t			subtype;			//!< for FR_TYPE_STRING encoding
 
 	uint8_t			length;				//!< length of the attribute
 	uint8_t			type_size;			//!< For TLV2 and root attributes.
 } fr_dict_attr_flags_t;
+
+/** subtype values for RADIUS
+ *
+ */
+enum {
+	FLAG_ENCRYPT_NONE = 0,				//!< Don't encrypt the attribute.
+	FLAG_ENCRYPT_USER_PASSWORD,			//!< Encrypt attribute RFC 2865 style.
+	FLAG_ENCRYPT_TUNNEL_PASSWORD,			//!< Encrypt attribute RFC 2868 style.
+	FLAG_ENCRYPT_ASCEND_SECRET,			//!< Encrypt attribute ascend style.
+	FLAG_EXTENDED_ATTR,				//!< the attribute is an extended attribute
+};
+
+/** subtype values for DHCPv4 and DHCPv6
+ *
+ */
+enum {
+	FLAG_ENCODE_NONE = 0,				//!< no particular encoding for DHCPv6 strings
+	FLAG_ENCODE_DNS_LABEL,				//!< encode as DNS label
+};
+
+/** subtype values for the dictionary when extra=1
+ *
+ */
+enum {
+	FLAG_EXTRA_NONE = 0,				//!< no extra meaning, should be invalid
+	FLAG_KEY_FIELD,					//!< this is a key field for a subsequent struct
+	FLAG_LENGTH_UINT16,			       	//!< string / octets type is prefixed by uint16 of length
+};
+
+#define da_is_key_field(_da) ((_da)->flags.extra && ((_da)->flags.subtype == FLAG_KEY_FIELD))
+#define da_is_length_field(_da) ((_da)->flags.extra && ((_da)->flags.subtype == FLAG_LENGTH_UINT16))
 
 extern const size_t dict_attr_sizes[FR_TYPE_MAX + 1][2];
 extern fr_dict_t *fr_dict_internal;
@@ -94,13 +119,13 @@ struct dict_attr {
 	union {
 		struct {
 			fr_dict_attr_t const	**children;	//!< Children of this attribute.
-			fr_dict_attr_t const	*next;		//!< Next child in bin.
 		};
 		struct {
 			fr_dict_t const		*dict;		//!< child dictionary
 			fr_dict_attr_t const	*ref;		//!< reference
 		};
 	};
+	fr_dict_attr_t const	*next;				//!< Next child in bin.
 
 
 	unsigned int		depth;				//!< Depth of nesting for this attribute.
@@ -170,6 +195,17 @@ typedef enum {
 	FR_DICT_ATTR_OOM		= -4,			//!< Memory allocation error.
 	FR_DICT_ATTR_EINVAL		= -5			//!< Invalid arguments.
 } fr_dict_attr_err_t;
+
+/** Protocol-specific callbacks in libfreeradius-PROTOCOL
+ *
+ */
+typedef struct {
+	char const		*name;				//!< name of this protocol
+	int			default_type_size;		//!< how many octets are in "type" field
+	int			default_type_length;		//!< how many octets are in "length" field
+	fr_table_num_ordered_t	const *subtype_table;		//!< for "encrypt=1", etc.
+	size_t			subtype_table_len;		//!< length of subtype_table
+} fr_dict_protocol_t;
 
 /*
  *	Dictionary constants
@@ -249,15 +285,15 @@ fr_dict_attr_t const	*fr_dict_attr_known(fr_dict_t *dict, fr_dict_attr_t const *
  *
  * @{
  */
-ssize_t			fr_dict_snprint_flags(char *out, size_t outlen, fr_type_t type, fr_dict_attr_flags_t const *flags);
+ssize_t			fr_dict_snprint_flags(char *out, size_t outlen, fr_dict_t const *dict, fr_type_t type, fr_dict_attr_flags_t const *flags);
 
-void			fr_dict_print(fr_dict_attr_t const *da, int depth);
+void			fr_dict_print(fr_dict_t const *dict, fr_dict_attr_t const *da, int depth);
 
 fr_dict_attr_t const	*fr_dict_parent_common(fr_dict_attr_t const *a, fr_dict_attr_t const *b, bool is_ancestor);
 
 int			fr_dict_oid_component(unsigned int *out, char const **oid);
 
-size_t			fr_dict_print_attr_oid(char *buffer, size_t outlen,
+size_t			fr_dict_print_attr_oid(size_t *need, char *buffer, size_t outlen,
 					       fr_dict_attr_t const *ancestor, fr_dict_attr_t const *da);
 
 ssize_t			fr_dict_attr_by_oid(fr_dict_t *dict, fr_dict_attr_t const **parent,
@@ -378,20 +414,28 @@ void			fr_dl_dict_autofree(dl_t const *module, void *symbol, void *user_ctx);
 int			fr_dl_dict_attr_autoload(dl_t const *module, void *symbol, void *user_ctx);
 /** @} */
 
+/** @name Allocating and freeing
+ *
+ * @{
+ */
 void			fr_dict_free(fr_dict_t **dict);
+
+/** @} */
 
 /** @name Initialisation
  *
  * @{
  */
  int			fr_dict_global_init(TALLOC_CTX *ctx, char const *dict_dir);
+
+ int			fr_dict_dir_set(char const *dict_dir);
 /** @} */
 
 /** @name Dictionary testing and validation
  *
  * @{
  */
-void			fr_dict_dump(fr_dict_t *dict);
+void			fr_dict_dump(fr_dict_t const *dict);
 
 int			fr_dict_parse_str(fr_dict_t *dict, char *buf,
 					  fr_dict_attr_t const *parent);
@@ -401,6 +445,9 @@ ssize_t			fr_dict_valid_name(char const *name, ssize_t len);
 ssize_t			fr_dict_valid_oid_str(char const *name, ssize_t len);
 
 void			fr_dict_verify(char const *file, int line, fr_dict_attr_t const *da);
+
+fr_dict_attr_t const	*fr_dict_attr_iterate_children(fr_dict_attr_t const *parent, fr_dict_attr_t const **prev);
+
 /** @} */
 
 #ifdef __cplusplus

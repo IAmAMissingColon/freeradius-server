@@ -60,14 +60,6 @@ typedef struct {
 
 static _Thread_local dl_module_inst_cache_t	dl_inst_cache;
 
-/** Modules which need RTLD_GLOBAL set
- *
- */
-static fr_table_num_sorted_t const dl_module_sym_global[] = {
-	{ "rlm_perl",	true }
-};
-static size_t dl_module_sym_global_len = NUM_ELEMENTS(dl_module_sym_global);
-
 /** Name prefixes matching the types of loadable module
  */
 static fr_table_num_sorted_t const dl_module_type_prefix[] = {
@@ -294,11 +286,16 @@ static void dl_module_instance_data_alloc(dl_module_inst_t *dl_inst, dl_module_t
  */
 static int _dl_module_free(dl_module_t *dl_module)
 {
-	if (DEBUG_ENABLED4) {
-		DEBUG4("%s unloaded.  Handle address %p, symbol address %p", dl_module->dl->name,
-		       dl_module->dl->handle, dl_module->common);
-	} else {
-		DEBUG3("%s unloaded", dl_module->dl->name);
+	/*
+	 *	dl is empty if we tried to load it and failed.
+	 */
+	if (dl_module->dl) {
+		if (DEBUG_ENABLED4) {
+			DEBUG4("%s unloaded.  Handle address %p, symbol address %p", dl_module->dl->name,
+			       dl_module->dl->handle, dl_module->common);
+		} else {
+			DEBUG3("%s unloaded", dl_module->dl->name);
+		}
 	}
 
 	if (dl_module->in_tree) {
@@ -373,8 +370,7 @@ dl_module_t const *dl_module(CONF_SECTION *conf, dl_module_t const *parent, char
 	 *	Pass in dl_module as the uctx so that
 	 *	we can get at it in any callbacks.
 	 */
-	dl = dl_by_name(dl_module_loader->dl_loader, module_name, dl_module, false,
-			fr_table_value_by_str(dl_module_sym_global, module_name, false));
+	dl = dl_by_name(dl_module_loader->dl_loader, module_name, dl_module, false);
 	if (!dl) {
 		cf_log_perr(conf, "Failed to link to module \"%s\"", module_name);
 		cf_log_err(conf, "Make sure it (and all its dependent libraries!) are in the search path"
